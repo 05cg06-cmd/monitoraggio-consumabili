@@ -14,17 +14,18 @@ let selectedPrescriptionMonth = new Date().getMonth() + 1; // Mese corrente 1-12
 let selectedPatient = null;
 let patientForPrescription = null;
 
-// PIN & Biometric State
+// PIN & Biometric State (Zero-Knowledge: nessun PIN o chiave salvati nel codice)
 let enteredPin = '';
-const PIN_STORAGE_KEY = 'mon_app_pin';
+const PIN_HASH_KEY = 'mon_app_pin_sha256';
 const BIOMETRIC_KEY = 'mon_app_bio_enabled';
+const PBKDF2_SALT = 'Medtronic_CampaniaMolise_Salt_2026';
 
 // Database IndexedDB
 const DB_NAME = 'MonitoraggioConsumabiliDB';
 const DB_VERSION = 1;
 const STORE_NAME = 'patients';
 const SCHEMA_VERSION_KEY = 'mon_app_schema_version';
-const CURRENT_SCHEMA_VERSION = 'v4_strict_inv';
+const CURRENT_SCHEMA_VERSION = 'v5_aes256';
 
 const MONTH_NAMES = {
   1: 'Gennaio', 2: 'Febbraio', 3: 'Marzo', 4: 'Aprile',
@@ -36,19 +37,67 @@ const MONTH_NAMES = {
 document.addEventListener('DOMContentLoaded', async () => {
   initPinState();
   await initDatabaseAndLoadData();
-  populateDropdownFilters();
-  applyGlobalFilters();
+  if (allPatients.length > 0) {
+    populateDropdownFilters();
+    applyGlobalFilters();
+  }
   highlightActiveMonthButton();
   lucide.createIcons();
 });
 
-// ==================== SICUREZZA & PIN ====================
+// ==================== SICUREZZA & CIFRATURA AES-256-GCM ====================
+async function computePinHash(pin) {
+  const data = new TextEncoder().encode(PBKDF2_SALT + ':' + pin);
+  const hashBuf = await window.crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function decryptPayloadWithPin(pin) {
+  const resp = await fetch('initial_data.enc?v=' + CURRENT_SCHEMA_VERSION);
+  if (!resp.ok) throw new Error('Impossibile scaricare archivio cifrato');
+  const buf = await resp.arrayBuffer();
+  const rawBytes = new Uint8Array(buf);
+  const iv = rawBytes.slice(0, 12);
+  const ciphertext = rawBytes.slice(12);
+
+  const subtle = window.crypto.subtle;
+  const keyMaterial = await subtle.importKey(
+    'raw',
+    new TextEncoder().encode(pin),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveKey']
+  );
+
+  const key = await subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt: new TextEncoder().encode(PBKDF2_SALT),
+      iterations: 100000,
+      hash: 'SHA-256'
+    },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['decrypt']
+  );
+
+  // Se il PIN è errato, subtle.decrypt lancia un'eccezione crittografica (tag GCM non valido)
+  const decryptedCompressed = await subtle.decrypt(
+    { name: 'AES-GCM', iv: iv },
+    key,
+    ciphertext
+  );
+
+  const ds = new DecompressionStream('gzip');
+  const decompressedStream = new Blob([decryptedCompressed]).stream().pipeThrough(ds);
+  const jsonText = await new Response(decompressedStream).text();
+  return JSON.parse(jsonText);
+}
+
 function initPinState() {
-  if (!localStorage.getItem(PIN_STORAGE_KEY)) {
-    localStorage.setItem(PIN_STORAGE_KEY, '1234');
-  }
   updatePinDots();
-  if (localStorage.getItem(BIOMETRIC_KEY) === 'true') {
+  if (localStorage.getItem(BIOMETRIC_KEY) === 'true' && localStorage.getItem(PIN_HASH_KEY)) {
     setTimeout(() => triggerBiometrics(), 400);
   }
 }
@@ -58,7 +107,7 @@ function pressPin(digit) {
     enteredPin += digit;
     updatePinDots();
     if (enteredPin.length === 4) {
-      setTimeout(verifyPin, 100);
+      setTimeout(verifyPin, 80);
     }
   }
 }
@@ -82,12 +131,63 @@ function updatePinDots() {
   });
 }
 
-function verifyPin() {
-  const storedPin = localStorage.getItem(PIN_STORAGE_KEY) || '1234';
-  if (enteredPin === storedPin) {
+async function verifyPin() {
+  const candidatePin = enteredPin;
+  const errEl = document.getElementById('pinError');
+  const savedHash = localStorage.getItem(PIN_HASH_KEY);
+
+  try {
+    // Caso 1: Dati già presenti in IndexedDB e hash PIN già registrato sul dispositivo
+    if (allPatients.length > 0 && savedHash) {
+      const candidateHash = await computePinHash(candidatePin);
+      if (candidateHash === savedHash) {
+        unlockApp();
+        return;
+      } else {
+        errEl.className = 'text-xs text-rose-400 font-medium h-4';
+        errEl.textContent = 'PIN non corretto. Riprova.';
+        enteredPin = '';
+        updatePinDots();
+        return;
+      }
+    }
+
+    // Caso 2: Primo sblocco sul dispositivo -> Decifra initial_data.enc tramite AES-256-GCM con il PIN inserito
+    errEl.className = 'text-xs text-sky-400 font-medium h-4';
+    errEl.textContent = 'Decifratura archivio AES-256 in corso...';
+
+    const data = await decryptPayloadWithPin(candidatePin);
+    const freshPatients = data.patients || [];
+
+    const db = await openDB();
+    const stored = await getAllPatientsFromDB(db);
+    if (stored && stored.length > 0) {
+      const storedMap = new Map(stored.map(p => [p.uid, p]));
+      freshPatients.forEach(fp => {
+        const oldP = storedMap.get(fp.uid);
+        if (oldP) {
+          if (oldP.data_prescrizione) fp.data_prescrizione = oldP.data_prescrizione;
+          if (oldP.manual_edit && oldP.inv_date) {
+            fp.inv_date = oldP.inv_date;
+            fp.manual_edit = true;
+          }
+        }
+      });
+    }
+
+    allPatients = freshPatients;
+    await savePatientsToDB(db, allPatients);
+    localStorage.setItem(SCHEMA_VERSION_KEY, CURRENT_SCHEMA_VERSION);
+    localStorage.setItem(PIN_HASH_KEY, await computePinHash(candidatePin));
+
+    populateDropdownFilters();
+    applyGlobalFilters();
+    updateStorageStats();
     unlockApp();
-  } else {
-    document.getElementById('pinError').textContent = 'PIN non corretto. Riprova.';
+  } catch (err) {
+    console.warn('Decifratura fallita:', err);
+    errEl.className = 'text-xs text-rose-400 font-medium h-4';
+    errEl.textContent = 'PIN non corretto. Accesso negato.';
     enteredPin = '';
     updatePinDots();
   }
@@ -113,7 +213,7 @@ async function triggerBiometrics() {
     return;
   }
   try {
-    if (localStorage.getItem(BIOMETRIC_KEY) === 'true') {
+    if (localStorage.getItem(BIOMETRIC_KEY) === 'true' && allPatients.length > 0) {
       unlockApp();
     } else {
       registerBiometrics();
@@ -128,17 +228,18 @@ function registerBiometrics() {
   alert('Face ID / Sblocco Biometrico attivato per questo dispositivo!');
 }
 
-function changePinDialog() {
+async function changePinDialog() {
   const oldPin = prompt('Inserisci il PIN attuale:');
-  const storedPin = localStorage.getItem(PIN_STORAGE_KEY) || '1234';
-  if (oldPin !== storedPin) {
+  if (!oldPin) return;
+  const savedHash = localStorage.getItem(PIN_HASH_KEY);
+  if (savedHash && (await computePinHash(oldPin)) !== savedHash) {
     alert('PIN attuale non valido.');
     return;
   }
-  const newPin = prompt('Inserisci il nuovo PIN a 4 cifre:');
+  const newPin = prompt('Inserisci il nuovo PIN locale a 4 cifre:');
   if (newPin && newPin.length === 4 && /^\d+$/.test(newPin)) {
-    localStorage.setItem(PIN_STORAGE_KEY, newPin);
-    alert('Nuovo PIN salvato con successo!');
+    localStorage.setItem(PIN_HASH_KEY, await computePinHash(newPin));
+    alert('Nuovo PIN salvato con successo su questo dispositivo!');
   } else {
     alert('PIN non valido. Deve essere composto da 4 numeri.');
   }
@@ -159,36 +260,6 @@ function openDB() {
   });
 }
 
-const ENC_MASK_HEX = '91f44b19d16beaa6519f53db13f79569b2235b0fb7e6927dd772035581de4bc3f49e27b1a51f6506df9fff2ae4a93658e6af93301437aa1c9c8a6ceb6a95e3a05d55e9c3d304cfe98c591935304308c7c52757fabdd5fa08e63f4b526ed447583fb0c4523a6bb7cd5a2799b9fd545e5b64c6faf5c78c5a76ae579bcd3dee049f0fff26ca2c71502bf1d6333e45672d13813eb57f4b719cd7abe6fc8eda74b0667e12eaa32d2b86c52b0dd94661b95f03ec0480cfc93c6997f6b991d117a55d644460c656663fa965fdc013a262acabade93bc09e938c3346cf37a6b19d2f56dcd90ebed51cb7f1f9592e81906156566e9e2a28deb2b4aac729559b6ce40e03388b532f7e59bede4070d198ed3bba0f58e3fdb8e25bad22a6742127550a9ce4011689149a03f59b2d0d46230d589db4dd851f230fd9f977181f1884016729628bc8329189af7f52ad3f83df3f5da8ca85b207ddd6184c0b589aa4186e8930c245f580ce5f70343872d56a44df8d0c47f0d2732e6650fa01629a0c7575fdc42f98193548c1fa6b97155a0e7f1b40996f229f2d75f3756f55728a6821d613cd224785de31433bcec14d920bcec4a388609d63f30ab225a5253ba34851164d22a10e98a879f64d74147a46e139b00e7e9c4f1ce7a3dc09e3b1d675d1292eae1431a3b9918512759b50e841bfe4fa8e75fadce37cc74a309646a727e225890bde95b0';
-
-async function fetchInitialDataPayload() {
-  try {
-    if (typeof DecompressionStream !== 'undefined') {
-      const resp = await fetch('initial_data.enc?v=' + CURRENT_SCHEMA_VERSION);
-      if (resp.ok) {
-        const buf = await resp.arrayBuffer();
-        const enc = new Uint8Array(buf);
-        const mask = new Uint8Array(512);
-        for (let i = 0; i < 512; i++) {
-          mask[i] = parseInt(ENC_MASK_HEX.substr(i * 2, 2), 16);
-        }
-        const dec = new Uint8Array(enc.length);
-        for (let idx = 0; idx < enc.length; idx++) {
-          dec[idx] = enc[idx] ^ mask[idx & 511] ^ ((idx * 31) & 255);
-        }
-        const ds = new DecompressionStream('gzip');
-        const decompressedStream = new Blob([dec]).stream().pipeThrough(ds);
-        const text = await new Response(decompressedStream).text();
-        return JSON.parse(text);
-      }
-    }
-  } catch (e) {
-    console.warn('Fallback su initial_data.json:', e);
-  }
-  const resp = await fetch('initial_data.json?v=' + CURRENT_SCHEMA_VERSION);
-  return await resp.json();
-}
-
 async function initDatabaseAndLoadData() {
   try {
     const db = await openDB();
@@ -197,35 +268,13 @@ async function initDatabaseAndLoadData() {
 
     if (stored && stored.length > 0 && savedSchema === CURRENT_SCHEMA_VERSION) {
       allPatients = stored;
-      console.log(`Caricati ${allPatients.length} pazienti da IndexedDB (${CURRENT_SCHEMA_VERSION})`);
+      console.log(`Caricati ${allPatients.length} pazienti da IndexedDB locale (${CURRENT_SCHEMA_VERSION})`);
+      updateStorageStats();
     } else {
-      console.log('Caricamento/Aggiornamento da archivio cifrato initial_data.enc...');
-      const data = await fetchInitialDataPayload();
-      const freshPatients = data.patients || [];
-
-      // Preserva eventuali modifiche manuali già fatte dall'utente
-      if (stored && stored.length > 0) {
-        const storedMap = new Map(stored.map(p => [p.uid, p]));
-        freshPatients.forEach(fp => {
-          const oldP = storedMap.get(fp.uid);
-          if (oldP) {
-            if (oldP.data_prescrizione) fp.data_prescrizione = oldP.data_prescrizione;
-            if (oldP.manual_edit && oldP.inv_date) {
-              fp.inv_date = oldP.inv_date;
-              fp.manual_edit = true;
-            }
-          }
-        });
-      }
-
-      allPatients = freshPatients;
-      await savePatientsToDB(db, allPatients);
-      localStorage.setItem(SCHEMA_VERSION_KEY, CURRENT_SCHEMA_VERSION);
-      console.log(`Salvati ${allPatients.length} pazienti arricchiti in IndexedDB`);
+      console.log('In attesa del PIN per decifrare initial_data.enc (AES-256-GCM)...');
     }
-    updateStorageStats();
   } catch (err) {
-    console.error('Errore inizializzazione dati:', err);
+    console.error('Errore lettura IndexedDB:', err);
   }
 }
 
@@ -1264,8 +1313,10 @@ function exportDataJson() {
 
 async function resetToInitialData() {
   if (!confirm('Vuoi davvero ripristinare il database allo stato iniziale cancellando le modifiche manuali?')) return;
+  const pin = prompt('Inserisci il PIN per decifrare l\'archivio iniziale AES-256:');
+  if (!pin) return;
   try {
-    const data = await fetchInitialDataPayload();
+    const data = await decryptPayloadWithPin(pin);
     allPatients = data.patients || [];
     const db = await openDB();
     await savePatientsToDB(db, allPatients);
@@ -1273,6 +1324,6 @@ async function resetToInitialData() {
     applyGlobalFilters();
     alert('Database ripristinato con successo!');
   } catch (err) {
-    alert('Errore ripristino: ' + err.message);
+    alert('PIN non valido o errore decifratura archivio.');
   }
 }
