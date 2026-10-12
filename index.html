@@ -78,7 +78,7 @@
           <i data-lucide="delete" class="w-6 h-6"></i>
         </button>
       </div>
-      <p class="text-center text-xs text-slate-500">PIN predefinito: <span class="font-mono text-slate-400">1234</span> (modificabile nelle impostazioni)</p>
+      <p class="text-center text-xs text-slate-500">Archivio protetto con cifratura <span class="font-mono text-sky-400">AES-256-GCM</span></p>
     </div>
   </div>
 
@@ -678,7 +678,7 @@
   </nav>
 
   <!-- App Script -->
-  <script src="app.js?v=8"></script>
+  <script src="app.js?v=9"></script>
   <script>
     lucide.createIcons();
     if ('serviceWorker' in navigator) {
@@ -687,7 +687,7 @@
           registration.update();
         }
       });
-      navigator.serviceWorker.register('sw.js?v=8').catch(err => console.log('SW Reg fail', err));
+      navigator.serviceWorker.register('sw.js?v=9').catch(err => console.log('SW Reg fail', err));
     }
   </script>
 </body>
