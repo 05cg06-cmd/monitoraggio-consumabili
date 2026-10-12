@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Monitoraggio Consumabili</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0f172a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="icon-192.png">
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- SheetJS for client-side Excel parsing -->
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+
+  <style>
+    /* Safe area padding for notch & home bar */
+    body {
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+    .custom-scroll::-webkit-scrollbar {
+      width: 4px;
+      height: 4px;
+    }
+    .custom-scroll::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans antialiased selection:bg-sky-500 selection:text-white">
+
+  <!-- ==================== SCHERMATA BLOCCO SICUREZZA ==================== -->
+  <div id="lockScreen" class="fixed inset-0 z-50 bg-slate-950 flex flex-col justify-between p-6 sm:p-8">
+    <div class="text-center pt-8">
+      <div class="w-20 h-20 mx-auto rounded-3xl bg-gradient-to-tr from-sky-600 to-indigo-600 flex items-center justify-center shadow-xl shadow-sky-500/20 mb-4 border border-sky-400/30">
+        <i data-lucide="shield-check" class="w-10 h-10 text-white"></i>
+      </div>
+      <h1 class="text-2xl font-bold text-white tracking-tight">Monitoraggio Consumabile</h1>
+      <p class="text-sm text-slate-400 mt-1">Area Riservata Protetta</p>
+    </div>
+
+    <!-- PIN dots -->
+    <div class="flex flex-col items-center">
+      <div id="pinDots" class="flex gap-4 mb-3">
+        <div class="w-3.5 h-3.5 rounded-full border-2 border-slate-600 transition-all duration-200"></div>
+        <div class="w-3.5 h-3.5 rounded-full border-2 border-slate-600 transition-all duration-200"></div>
+        <div class="w-3.5 h-3.5 rounded-full border-2 border-slate-600 transition-all duration-200"></div>
+        <div class="w-3.5 h-3.5 rounded-full border-2 border-slate-600 transition-all duration-200"></div>
+      </div>
+      <p id="pinError" class="text-xs text-rose-400 font-medium h-4"></p>
+    </div>
+
+    <!-- Keypad -->
+    <div class="max-w-xs mx-auto w-full pb-6">
+      <div class="grid grid-cols-3 gap-3 sm:gap-4 mb-4">
+        <button onclick="pressPin('1')" class="h-16 rounded-2xl bg-slate-900/90 active:bg-sky-600 border border-slate-800 text-xl font-semibold shadow transition">1</button>
+        <button onclick="pressPin('2')" class="h-16 rounded-2xl bg-slate-900/90 active:bg-sky-600 border border-slate-800 text-xl font-semibold shadow transition">2</button>
+        <button onclick="pressPin('3')" class="h-16 rounded-2xl bg-slate-900/90 active:bg-sky-600 border border-slate-800 text-xl font-semibold shadow transition">3</button>
+        <button onclick="pressPin('4')" class="h-16 rounded-2xl bg-slate-900/90 active:bg-sky-600 border border-slate-800 text-xl font-semibold shadow transition">4</button>
+        <button onclick="pressPin('5')" class="h-16 rounded-2xl bg-slate-900/90 active:bg-sky-600 border border-slate-800 text-xl font-semibold shadow transition">5</button>
+        <button onclick="pressPin('6')" class="h-16 rounded-2xl bg-slate-900/90 active:bg-sky-600 border border-slate-800 text-xl font-semibold shadow transition">6</button>
+        <button onclick="pressPin('7')" class="h-16 rounded-2xl bg-slate-900/90 active:bg-sky-600 border border-slate-800 text-xl font-semibold shadow transition">7</button>
+        <button onclick="pressPin('8')" class="h-16 rounded-2xl bg-slate-900/90 active:bg-sky-600 border border-slate-800 text-xl font-semibold shadow transition">8</button>
+        <button onclick="pressPin('9')" class="h-16 rounded-2xl bg-slate-900/90 active:bg-sky-600 border border-slate-800 text-xl font-semibold shadow transition">9</button>
+        <button onclick="triggerBiometrics()" class="h-16 rounded-2xl bg-slate-900/50 active:bg-slate-800 border border-slate-800/60 flex items-center justify-center text-sky-400">
+          <i data-lucide="scan-face" class="w-7 h-7"></i>
+        </button>
+        <button onclick="pressPin('0')" class="h-16 rounded-2xl bg-slate-900/90 active:bg-sky-600 border border-slate-800 text-xl font-semibold shadow transition">0</button>
+        <button onclick="deletePin()" class="h-16 rounded-2xl bg-slate-900/50 active:bg-slate-800 border border-slate-800/60 flex items-center justify-center text-slate-400">
+          <i data-lucide="delete" class="w-6 h-6"></i>
+        </button>
+      </div>
+      <p class="text-center text-xs text-slate-500">PIN predefinito: <span class="font-mono text-slate-400">1234</span> (modificabile nelle impostazioni)</p>
+    </div>
+  </div>
+
+  <!-- ==================== TOP APP BAR ==================== -->
+  <header class="sticky top-0 z-30 bg-slate-900/90 backdrop-blur-md border-b border-slate-800 px-4 py-3 flex items-center justify-between">
+    <div class="flex items-center gap-2.5">
+      <div class="w-8 h-8 rounded-xl bg-sky-500 flex items-center justify-center text-white shadow-md shadow-sky-500/30">
+        <i data-lucide="activity" class="w-4 h-4"></i>
+      </div>
+      <div>
+        <h2 id="headerTitle" class="text-sm font-bold text-white tracking-tight leading-tight">Dashboard</h2>
+        <p id="headerSubtitle" class="text-[11px] text-slate-400 leading-none mt-0.5">Campania & Molise</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <button onclick="lockApp()" class="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 active:scale-95 transition" title="Blocca App">
+        <i data-lucide="lock" class="w-4 h-4"></i>
+      </button>
+    </div>
+  </header>
+
+  <!-- ==================== CONTENUTO PRINCIPALE (VIEWS) ==================== -->
+  <main class="flex-1 pb-24 overflow-y-auto custom-scroll px-3.5 pt-3">
+
+    <!-- VIEW 1: DASHBOARD -->
+    <section id="view-dashboard" class="space-y-4">
+      <!-- Filtri Rapidi -->
+      <div class="bg-slate-900/80 rounded-2xl p-3 border border-slate-800 space-y-2.5 shadow-sm">
+        <div class="flex items-center justify-between text-xs text-slate-400 font-medium">
+          <span class="flex items-center gap-1.5"><i data-lucide="filter" class="w-3.5 h-3.5 text-sky-400"></i> Filtri Rapidi</span>
+          <button onclick="resetFilters()" class="text-sky-400 hover:underline text-[11px]">Azzera</button>
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="text-[10px] text-slate-500 font-semibold uppercase tracking-wider block mb-1">Commerciale (Sales)</label>
+            <select id="filterSales" onchange="applyGlobalFilters()" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-sky-500">
+              <option value="">Tutti i Sales</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-[10px] text-slate-500 font-semibold uppercase tracking-wider block mb-1">ASL / Distretto</label>
+            <select id="filterAsl" onchange="applyGlobalFilters()" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-sky-500">
+              <option value="">Tutte le ASL</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Alert Banner se ci sono NPNP critici senza bolla -->
+      <div id="alertBannerMMX" onclick="switchTab('da_fatturare', 'no_matrix')" class="hidden bg-rose-950/50 border border-rose-500/40 rounded-2xl p-3.5 flex items-start gap-3 cursor-pointer active:scale-[0.99] transition shadow-lg shadow-rose-950/30">
+        <div class="w-8 h-8 rounded-xl bg-rose-500/20 text-rose-400 flex items-center justify-center shrink-0 mt-0.5">
+          <i data-lucide="alert-triangle" class="w-5 h-5"></i>
+        </div>
+        <div class="flex-1">
+          <div class="flex items-center justify-between">
+            <h4 class="text-xs font-bold text-rose-300">ATTENZIONE BOLLA MMX MANCANTE</h4>
+            <span id="badgeCountMMX" class="text-[11px] font-bold px-2 py-0.5 rounded-full bg-rose-500 text-white">0</span>
+          </div>
+          <p class="text-[11px] text-rose-200/80 mt-1 leading-snug">
+            Nuovi pazienti (NPNP ≤ 18 mesi) senza fattura e <span class="underline font-semibold">non trovati in Matrix</span>. Tocca per vedere solo i critici senza bolla.
+          </p>
+        </div>
+      </div>
+
+      <!-- KPI Grid -->
+      <div class="grid grid-cols-2 gap-2.5">
+        <!-- Totale Micro -->
+        <div onclick="switchTab('micro')" class="bg-slate-900/90 rounded-2xl p-3.5 border border-slate-800/80 shadow cursor-pointer active:scale-[0.98] transition">
+          <div class="flex items-center justify-between text-slate-400 mb-1">
+            <span class="text-xs font-medium">Pazienti Micro</span>
+            <i data-lucide="cpu" class="w-4 h-4 text-sky-400"></i>
+          </div>
+          <div id="kpiTotalMicro" class="text-2xl font-bold text-white tracking-tight">--</div>
+          <p class="text-[10px] text-slate-500 mt-0.5">Classificazione NPNP ed EPNP</p>
+        </div>
+
+        <!-- Totale GC -->
+        <div onclick="switchTab('micro'); togglePatientType('gc');" class="bg-slate-900/90 rounded-2xl p-3.5 border border-slate-800/80 shadow cursor-pointer active:scale-[0.98] transition">
+          <div class="flex items-center justify-between text-slate-400 mb-1">
+            <span class="text-xs font-medium">Pazienti GC</span>
+            <i data-lucide="radio" class="w-4 h-4 text-indigo-400"></i>
+          </div>
+          <div id="kpiTotalGC" class="text-2xl font-bold text-white tracking-tight">--</div>
+          <p class="text-[10px] text-slate-500 mt-0.5">NPGC ed EPGC (Simplera/GC)</p>
+        </div>
+
+        <!-- Fatturati Regolarmente -->
+        <div onclick="switchTab('micro', 'invoiced')" class="bg-emerald-950/30 rounded-2xl p-3.5 border border-emerald-800/50 shadow cursor-pointer active:scale-[0.98] transition">
+          <div class="flex items-center justify-between text-emerald-400 mb-1">
+            <span class="text-xs font-medium">Fatturati</span>
+            <i data-lucide="check-circle" class="w-4 h-4"></i>
+          </div>
+          <div id="kpiFatturati" class="text-2xl font-bold text-emerald-300 tracking-tight">--</div>
+          <p id="kpiFatturatiPct" class="text-[10px] text-emerald-400/80 mt-0.5">--% del totale micro</p>
+        </div>
+
+        <!-- Da Fatturare (NPNP 18m non fatturati) -->
+        <div onclick="switchTab('da_fatturare', 'all_unbilled')" class="bg-amber-950/30 rounded-2xl p-3.5 border border-amber-800/50 shadow cursor-pointer active:scale-[0.98] transition">
+          <div class="flex items-center justify-between text-amber-400 mb-1">
+            <span class="text-xs font-medium">NPNP Da Fatturare</span>
+            <i data-lucide="alert-circle" class="w-4 h-4"></i>
+          </div>
+          <div id="kpiDaFatturare" class="text-2xl font-bold text-amber-300 tracking-tight">--</div>
+          <p id="kpiDaFatturareSub" class="text-[10px] text-amber-400/80 mt-0.5">Ultimi 18 mesi senza fattura</p>
+        </div>
+
+        <!-- In Matrix Open Order -->
+        <div onclick="switchTab('da_fatturare', 'in_matrix')" class="col-span-2 bg-slate-900/90 rounded-2xl p-3.5 border border-slate-800/80 shadow flex items-center justify-between cursor-pointer active:scale-[0.98] transition">
+          <div class="flex items-center gap-3">
+            <div class="w-9 h-9 rounded-xl bg-sky-500/20 text-sky-400 flex items-center justify-center">
+              <i data-lucide="layers" class="w-5 h-5"></i>
+            </div>
+            <div>
+              <div class="text-xs font-semibold text-slate-200">Ordini Aperti in Matrix (Open Order)</div>
+              <div class="text-[11px] text-slate-400">Bolle MMX create e in attesa di fatturazione</div>
+            </div>
+          </div>
+          <div id="kpiOpenOrderCount" class="text-xl font-bold text-sky-400">--</div>
+        </div>
+
+        <!-- Card Accesso Diretto: Scadenze Prescrizioni Annuali (Controllo Mese) -->
+        <div onclick="switchTab('prescrizioni')" class="col-span-2 bg-gradient-to-r from-sky-950/70 via-indigo-950/60 to-slate-900 rounded-2xl p-4 border border-sky-500/40 shadow-lg shadow-sky-950/30 flex items-center justify-between cursor-pointer active:scale-[0.98] transition">
+          <div class="flex items-center gap-3.5">
+            <div class="w-10 h-10 rounded-2xl bg-sky-500/20 border border-sky-400/30 text-sky-400 flex items-center justify-center shrink-0">
+              <i data-lucide="calendar" class="w-5 h-5"></i>
+            </div>
+            <div>
+              <div class="flex items-center gap-2">
+                <span class="text-xs font-bold text-white">Scadenze Prescrizioni Annuali</span>
+                <span class="text-[9px] font-bold px-1.5 py-0.2 rounded bg-sky-500 text-white">12 MESI</span>
+              </div>
+              <div class="text-[11px] text-sky-200/80 mt-0.5">Controllo rinnovi consumabili per mese (Gen - Dic) & date</div>
+            </div>
+          </div>
+          <div class="w-8 h-8 rounded-xl bg-slate-800/80 text-slate-300 flex items-center justify-center shrink-0">
+            <i data-lucide="chevron-right" class="w-4 h-4"></i>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 2: DA FATTURARE & SCADENZE -->
+    <section id="view-da_fatturare" class="hidden space-y-3">
+      <!-- Sotto-tab principale -->
+      <div class="flex rounded-xl bg-slate-900 p-1 border border-slate-800">
+        <button id="subtab-btn-npnp" onclick="switchDaFatturareSubtab('npnp')" class="flex-1 py-1.5 text-xs font-semibold rounded-lg bg-sky-600 text-white transition">
+          Da Fatturare (Micro)
+        </button>
+        <button id="subtab-btn-scadenza" onclick="switchDaFatturareSubtab('scadenza')" class="flex-1 py-1.5 text-xs font-semibold rounded-lg text-slate-400 hover:text-white transition">
+          Scadenza 4 Anni
+        </button>
+      </div>
+
+      <!-- Chip Filtri Rapidi per Da Fatturare (visibili nel tab Da Fatturare) -->
+      <div id="daFatturareFilterChips" class="flex gap-1.5 overflow-x-auto pb-1 text-[11px] custom-scroll">
+        <button onclick="setDaFatturareFilter('all_unbilled')" id="chip-df-all_unbilled" class="px-2.5 py-1.5 rounded-xl bg-sky-600 text-white font-semibold shrink-0 transition">
+          Tutti NPNP ≤18m (<span id="cnt-df-all">0</span>)
+        </button>
+        <button onclick="setDaFatturareFilter('no_matrix')" id="chip-df-no_matrix" class="px-2.5 py-1.5 rounded-xl bg-slate-800 text-rose-300 border border-rose-800/40 font-semibold shrink-0 transition">
+          🔴 Senza Bolla Matrix (<span id="cnt-df-nomat">0</span>)
+        </button>
+        <button onclick="setDaFatturareFilter('in_matrix')" id="chip-df-in_matrix" class="px-2.5 py-1.5 rounded-xl bg-slate-800 text-amber-300 border border-amber-800/40 font-semibold shrink-0 transition">
+          🟡 In Matrix Open Order (<span id="cnt-df-inmat">0</span>)
+        </button>
+        <button onclick="setDaFatturareFilter('all_micro_unbilled')" id="chip-df-all_micro_unbilled" class="px-2.5 py-1.5 rounded-xl bg-slate-800 text-slate-300 font-medium shrink-0 transition">
+          📋 Tutti Micro Non Fatt. (<span id="cnt-df-allmicro">0</span>)
+        </button>
+      </div>
+
+      <!-- Descrizione Sezione NPNP -->
+      <div id="subtab-desc-npnp" class="text-[11px] text-slate-400 px-1">
+        Mostra <strong>esclusivamente i pazienti NON ancora fatturati</strong>. Usa i pulsanti qui sopra per isolare chi non ha la bolla in Matrix da chi è già in Open Order.
+      </div>
+      <!-- Descrizione Sezione Scadenza 4 Anni -->
+      <div id="subtab-desc-scadenza" class="hidden text-[11px] text-slate-400 px-1">
+        Microinfusori con data di fatturazione vicina o superiore a 48 mesi. Predisporre il rinnovo/prescrizione.
+      </div>
+
+      <!-- Filtro ricerca nella view -->
+      <div class="relative">
+        <i data-lucide="search" class="w-4 h-4 text-slate-500 absolute left-3 top-3"></i>
+        <input type="text" id="searchDaFatturare" oninput="renderDaFatturareList()" placeholder="Cerca paziente, matricola, blocco Matrix o ASL..." class="w-full bg-slate-900 border border-slate-800 rounded-xl pl-9 pr-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500">
+      </div>
+
+      <!-- Lista Card Dinamica -->
+      <div id="listDaFatturare" class="space-y-2.5">
+        <!-- Generato da JS -->
+      </div>
+    </section>
+
+    <!-- VIEW 3: SCADENZE ANNUALI PRESCRIZIONI CONSUMABILI (PER MESE) -->
+    <section id="view-prescrizioni" class="hidden space-y-3">
+      <!-- Selettore dei 12 Mesi -->
+      <div class="bg-slate-900 rounded-2xl p-2.5 border border-slate-800 space-y-2">
+        <div class="flex items-center justify-between text-xs px-1 text-slate-400">
+          <span class="font-bold text-white flex items-center gap-1.5"><i data-lucide="calendar" class="w-3.5 h-3.5 text-sky-400"></i> Mese di Rinnovo Prescrizione</span>
+          <span id="prescMonthCountBadge" class="text-[11px] font-bold text-sky-400 bg-sky-950/80 px-2 py-0.5 rounded-full border border-sky-800/40">-- pazienti</span>
+        </div>
+        <!-- 12 Mesi orizzontali -->
+        <div class="grid grid-cols-6 gap-1.5 text-center text-xs">
+          <button onclick="selectPrescriptionMonth(1)" id="btn-month-1" class="py-1.5 rounded-xl border border-slate-800 bg-slate-950 text-slate-300 font-semibold active:scale-95 transition">Gen</button>
+          <button onclick="selectPrescriptionMonth(2)" id="btn-month-2" class="py-1.5 rounded-xl border border-slate-800 bg-slate-950 text-slate-300 font-semibold active:scale-95 transition">Feb</button>
+          <button onclick="selectPrescriptionMonth(3)" id="btn-month-3" class="py-1.5 rounded-xl border border-slate-800 bg-slate-950 text-slate-300 font-semibold active:scale-95 transition">Mar</button>
+          <button onclick="selectPrescriptionMonth(4)" id="btn-month-4" class="py-1.5 rounded-xl border border-slate-800 bg-slate-950 text-slate-300 font-semibold active:scale-95 transition">Apr</button>
+          <button onclick="selectPrescriptionMonth(5)" id="btn-month-5" class="py-1.5 rounded-xl border border-slate-800 bg-slate-950 text-slate-300 font-semibold active:scale-95 transition">Mag</button>
+          <button onclick="selectPrescriptionMonth(6)" id="btn-month-6" class="py-1.5 rounded-xl border border-slate-800 bg-slate-950 text-slate-300 font-semibold active:scale-95 transition">Giu</button>
+          <button onclick="selectPrescriptionMonth(7)" id="btn-month-7" class="py-1.5 rounded-xl border border-slate-800 bg-slate-950 text-slate-300 font-semibold active:scale-95 transition">Lug</button>
+          <button onclick="selectPrescriptionMonth(8)" id="btn-month-8" class="py-1.5 rounded-xl border border-slate-800 bg-slate-950 text-slate-300 font-semibold active:scale-95 transition">Ago</button>
+          <button onclick="selectPrescriptionMonth(9)" id="btn-month-9" class="py-1.5 rounded-xl border border-slate-800 bg-slate-950 text-slate-300 font-semibold active:scale-95 transition">Set</button>
+          <button onclick="selectPrescriptionMonth(10)" id="btn-month-10" class="py-1.5 rounded-xl border border-slate-800 bg-slate-950 text-slate-300 font-semibold active:scale-95 transition">Ott</button>
+          <button onclick="selectPrescriptionMonth(11)" id="btn-month-11" class="py-1.5 rounded-xl border border-slate-800 bg-slate-950 text-slate-300 font-semibold active:scale-95 transition">Nov</button>
+          <button onclick="selectPrescriptionMonth(12)" id="btn-month-12" class="py-1.5 rounded-xl border border-slate-800 bg-slate-950 text-slate-300 font-semibold active:scale-95 transition">Dic</button>
+        </div>
+      </div>
+
+      <!-- Barra di ricerca e filtri stato prescrizione -->
+      <div class="space-y-2">
+        <div class="relative">
+          <i data-lucide="search" class="w-4 h-4 text-slate-500 absolute left-3 top-3"></i>
+          <input type="text" id="searchPrescrizioni" oninput="renderPrescrizioniList()" placeholder="Cerca per Medico, Centro, Paziente o ASL..." class="w-full bg-slate-900 border border-slate-800 rounded-xl pl-9 pr-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500">
+        </div>
+      </div>
+
+      <!-- Elenco Pazienti del Mese Selezionato -->
+      <div id="listPrescrizioni" class="space-y-2.5">
+        <!-- Generato da JS -->
+      </div>
+    </section>
+
+    <!-- VIEW 4: TUTTI I PAZIENTI (MICRO & GC) -->
+    <section id="view-micro" class="hidden space-y-3">
+      <!-- Sotto-toggle Micro vs GC -->
+      <div class="flex rounded-xl bg-slate-900 p-1 border border-slate-800">
+        <button id="toggle-sub-micro" onclick="togglePatientType('micro')" class="flex-1 py-1.5 text-xs font-semibold rounded-lg bg-sky-600 text-white transition">
+          Microinfusori (Micro)
+        </button>
+        <button id="toggle-sub-gc" onclick="togglePatientType('gc')" class="flex-1 py-1.5 text-xs font-semibold rounded-lg text-slate-400 hover:text-white transition">
+          Sensori Standalone (GC)
+        </button>
+      </div>
+
+      <!-- Barra di ricerca e filtri -->
+      <div class="space-y-2">
+        <div class="relative">
+          <i data-lucide="search" class="w-4 h-4 text-slate-500 absolute left-3 top-3"></i>
+          <input type="text" id="searchMicro" oninput="renderMicroList()" placeholder="Cerca per Nome, UID, Seriale NG, Medico o ASL..." class="w-full bg-slate-900 border border-slate-800 rounded-xl pl-9 pr-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500">
+        </div>
+        <!-- Chip filtri stato -->
+        <div id="microFilterChips" class="flex gap-1.5 overflow-x-auto pb-1 text-[11px] custom-scroll">
+          <button onclick="setMicroFilter('all')" id="chip-micro-all" class="px-2.5 py-1 rounded-full bg-sky-600 text-white font-medium shrink-0">Tutti (<span id="cnt-m-all">0</span>)</button>
+          <button onclick="setMicroFilter('invoiced')" id="chip-micro-invoiced" class="px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 font-medium shrink-0">🟢 Fatturati (<span id="cnt-m-inv">0</span>)</button>
+          <button onclick="setMicroFilter('matrix')" id="chip-micro-matrix" class="px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 font-medium shrink-0">🟡 In Matrix (<span id="cnt-m-mat">0</span>)</button>
+          <button onclick="setMicroFilter('missing')" id="chip-micro-missing" class="px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 font-medium shrink-0">🔴 Da Fatturare (<span id="cnt-m-mis">0</span>)</button>
+        </div>
+      </div>
+
+      <!-- Elenco Pazienti -->
+      <div id="listMicro" class="space-y-2">
+        <!-- Generato da JS -->
+      </div>
+    </section>
+
+    <!-- VIEW 5: IMPOSTAZIONI & AGGIORNAMENTO DATI -->
+    <section id="view-settings" class="hidden space-y-4">
+      <!-- Sezione Caricamento File -->
+      <div class="bg-slate-900 rounded-2xl p-4 border border-slate-800 space-y-3">
+        <div class="flex items-center gap-2 text-sm font-bold text-white">
+          <i data-lucide="cloud-upload" class="w-4 h-4 text-sky-400"></i>
+          Aggiornamento Dati da File Excel
+        </div>
+        <p class="text-xs text-slate-400 leading-relaxed">
+          Puoi caricare i file aggiornati (da OneDrive aziendale o memoria dispositivo). Il motore locale esegue il merge automatico in tempo reale.
+        </p>
+
+        <div class="space-y-2.5 pt-1">
+          <!-- File 1: IB_CAMPANIA -->
+          <div class="p-3 bg-slate-950 rounded-xl border border-slate-800 flex items-center justify-between">
+            <div class="truncate pr-2">
+              <span class="text-xs font-semibold text-white block">1. IB_CAMPANIA-MOLISE</span>
+              <span id="labelIbFile" class="text-[10px] text-slate-500 block truncate">Anagrafica pazienti, consensi, seriali</span>
+            </div>
+            <label class="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium cursor-pointer shrink-0">
+              Scegli File
+              <input type="file" id="inputIbFile" accept=".xlsx,.xlsm" onchange="handleExcelImport('ib', event)" class="hidden">
+            </label>
+          </div>
+
+          <!-- File 2: Sales Order / Invoice -->
+          <div class="p-3 bg-slate-950 rounded-xl border border-slate-800 flex items-center justify-between">
+            <div class="truncate pr-2">
+              <span class="text-xs font-semibold text-white block">2. Sales order - Invoice</span>
+              <span id="labelInvFile" class="text-[10px] text-slate-500 block truncate">Fatture emesse e articoli per PO</span>
+            </div>
+            <label class="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium cursor-pointer shrink-0">
+              Scegli File
+              <input type="file" id="inputInvFile" accept=".xlsx,.xlsm" onchange="handleExcelImport('inv', event)" class="hidden">
+            </label>
+          </div>
+
+          <!-- File 3: NEWMATRIX -->
+          <div class="p-3 bg-slate-950 rounded-xl border border-slate-800 flex items-center justify-between">
+            <div class="truncate pr-2">
+              <span class="text-xs font-semibold text-white block">3. NEWMATRIX</span>
+              <span id="labelMatFile" class="text-[10px] text-slate-500 block truncate">Pipeline Open Order e blocchi bolle</span>
+            </div>
+            <label class="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium cursor-pointer shrink-0">
+              Scegli File
+              <input type="file" id="inputMatFile" accept=".xlsx,.xlsm" onchange="handleExcelImport('mat', event)" class="hidden">
+            </label>
+          </div>
+
+          <!-- File 4: Rpt_20261010 (Ordini per UID) -->
+          <div class="p-3 bg-slate-950 rounded-xl border border-indigo-800/50 flex items-center justify-between">
+            <div class="truncate pr-2">
+              <div class="flex items-center gap-1.5">
+                <span class="text-xs font-semibold text-white">4. Rpt Ordini per UID</span>
+                <span class="text-[9px] px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 font-bold">NUOVO</span>
+              </div>
+              <span id="labelRptFile" class="text-[10px] text-slate-500 block truncate">Storico ordini Micro, Consumabile, Sensore e Domiciliare</span>
+            </div>
+            <label class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium cursor-pointer shrink-0">
+              Scegli File
+              <input type="file" id="inputRptFile" accept=".xlsx,.xlsm" onchange="handleExcelImport('rpt', event)" class="hidden">
+            </label>
+          </div>
+        </div>
+
+        <div id="importProgress" class="hidden text-xs text-sky-400 bg-sky-950/40 p-2.5 rounded-xl border border-sky-800/50 flex items-center gap-2">
+          <i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i>
+          <span id="importProgressText">Elaborazione file in corso...</span>
+        </div>
+      </div>
+
+      <!-- Gestione Sicurezza / PIN -->
+      <div class="bg-slate-900 rounded-2xl p-4 border border-slate-800 space-y-3">
+        <div class="flex items-center gap-2 text-sm font-bold text-white">
+          <i data-lucide="key" class="w-4 h-4 text-amber-400"></i>
+          Sicurezza & PIN di Sblocco
+        </div>
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="text-xs font-medium text-slate-200">Face ID / Biometria</div>
+            <div class="text-[10px] text-slate-500">Sblocco rapido con sensore dispositivo</div>
+          </div>
+          <button onclick="registerBiometrics()" class="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-medium text-sky-400 border border-slate-700">
+            Attiva Face ID
+          </button>
+        </div>
+        <div class="pt-2 border-t border-slate-800/80 flex items-center justify-between">
+          <div>
+            <div class="text-xs font-medium text-slate-200">Modifica PIN a 4 cifre</div>
+            <div class="text-[10px] text-slate-500">Attualmente impostato</div>
+          </div>
+          <button onclick="changePinDialog()" class="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 border border-slate-700">
+            Cambia PIN
+          </button>
+        </div>
+      </div>
+
+      <!-- Backup e Ripristino Dati -->
+      <div class="bg-slate-900 rounded-2xl p-4 border border-slate-800 space-y-3">
+        <div class="flex items-center gap-2 text-sm font-bold text-white">
+          <i data-lucide="database" class="w-4 h-4 text-emerald-400"></i>
+          Archivio Dati Locale
+        </div>
+        <div class="text-xs text-slate-400 space-y-1">
+          <div>Pazienti memorizzati: <span id="statTotalPatients" class="font-bold text-white">--</span></div>
+          <div>Ultimo aggiornamento: <span id="statLastUpdate" class="font-bold text-white">--</span></div>
+        </div>
+        <div class="flex gap-2 pt-1">
+          <button onclick="exportDataJson()" class="flex-1 py-2 rounded-xl bg-slate-800 text-xs font-semibold text-slate-300 hover:bg-slate-700 border border-slate-700">
+            Esporta Backup
+          </button>
+          <button onclick="resetToInitialData()" class="flex-1 py-2 rounded-xl bg-rose-950/40 text-xs font-semibold text-rose-300 hover:bg-rose-900/50 border border-rose-800/40">
+            Ripristina Iniziali
+          </button>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ==================== BOTTOM SHEET / MODALE DETTAGLIO PAZIENTE ==================== -->
+  <div id="patientModal" class="fixed inset-0 z-40 bg-black/70 backdrop-blur-sm hidden flex flex-col justify-end">
+    <div onclick="closePatientModal()" class="flex-1"></div>
+    <div class="bg-slate-900 rounded-t-3xl border-t border-slate-800 max-h-[88vh] flex flex-col shadow-2xl animate-in slide-in-from-bottom duration-200">
+      
+      <!-- Drag handle & Header -->
+      <div class="px-5 pt-3 pb-3 border-b border-slate-800 flex items-start justify-between">
+        <div class="space-y-0.5">
+          <div class="w-10 h-1 bg-slate-700 rounded-full mx-auto mb-2.5"></div>
+          <div class="flex items-center gap-2 flex-wrap">
+            <h3 id="modalPatientName" class="text-base font-bold text-white">Nome Paziente</h3>
+            <span id="modalPatientUid" class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-slate-300">UID: --</span>
+            <span id="modalDomiciliareBadge" class="hidden text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-950 text-indigo-300 border border-indigo-700/50">🏠 Domiciliare</span>
+          </div>
+          <p id="modalPatientAsl" class="text-xs text-slate-400 truncate max-w-xs">ASL di riferimento</p>
+        </div>
+        <button onclick="closePatientModal()" class="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white mt-2">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <!-- Body Scrollabile -->
+      <div class="flex-1 overflow-y-auto p-5 space-y-4 custom-scroll text-xs">
+        
+        <!-- BOX 1: CONFRONTO CONSENSO vs FATTURAZIONE -->
+        <div class="bg-slate-950 rounded-2xl p-4 border border-slate-800 space-y-3">
+          <div class="text-[11px] font-bold uppercase tracking-wider text-slate-400 flex items-center justify-between">
+            <span>Stato Ciclo Fatturazione</span>
+            <span id="modalStatusBadge" class="px-2.5 py-0.5 rounded-full text-[10px] font-bold">--</span>
+          </div>
+
+          <div class="grid grid-cols-3 gap-2 pt-1">
+            <div class="bg-slate-900 p-2 rounded-xl border border-slate-800/80">
+              <span class="text-[9px] text-slate-500 uppercase tracking-wider block">Consenso (IB)</span>
+              <span id="modalDataConsenso" class="text-[11px] font-bold text-white mt-0.5 block truncate">--</span>
+            </div>
+            <div class="bg-slate-900 p-2 rounded-xl border border-slate-800/80">
+              <span class="text-[9px] text-slate-500 uppercase tracking-wider block">Fattura (SO)</span>
+              <span id="modalDataFattura" class="text-[11px] font-bold text-emerald-400 mt-0.5 block truncate">--</span>
+            </div>
+            <div class="bg-slate-900 p-2 rounded-xl border border-sky-800/60 bg-sky-950/30">
+              <span class="text-[9px] text-sky-400 font-bold uppercase tracking-wider block flex items-center gap-1">
+                <i data-lucide="clock" class="w-2.5 h-2.5"></i> Scadenza 4A
+              </span>
+              <span id="modalDataScadenza4Anni" class="text-[11px] font-bold text-white mt-0.5 block truncate">--</span>
+            </div>
+          </div>
+
+          <!-- Fonte dato fattura (Seriale Diretto vs Recuperato da UID) -->
+          <div class="flex items-center justify-between text-[10px] text-slate-400 px-1">
+            <span>Fonte Tracciamento Fattura:</span>
+            <span id="modalInvSource" class="font-mono font-semibold text-sky-300">--</span>
+          </div>
+
+          <!-- Banner esito scadenza 4 anni -->
+          <div id="modalExpiryStatusBanner" class="p-2 rounded-xl text-[11px] flex items-center justify-between bg-slate-900 border border-slate-800">
+            <span class="text-slate-400">Ciclo di vita 4 anni (48 mesi):</span>
+            <span id="modalExpiryStatusText" class="font-bold">--</span>
+          </div>
+
+          <!-- Pulsante Inserisci / Modifica Data Fatturazione Manuale -->
+          <div class="pt-2 border-t border-slate-800 flex items-center justify-between">
+            <span class="text-[11px] text-slate-400">Vuoi correggere o forzare la data?</span>
+            <button onclick="openEditInvoiceDateModal()" class="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-medium text-[11px]">
+              Modifica Data
+            </button>
+          </div>
+        </div>
+
+        <!-- BOX 2: STATO MATRIX / BOLLA MMX -->
+        <div id="modalMatrixBox" class="rounded-2xl p-4 border space-y-2">
+          <!-- Riempito dinamicamente -->
+        </div>
+
+        <!-- BOX 2B: STORICO ORDINI PAZIENTE PER UID (DA RPT_20261010) -->
+        <div class="bg-slate-950 rounded-2xl p-4 border border-indigo-900/50 space-y-3">
+          <div class="flex items-center justify-between">
+            <span class="text-[11px] font-bold uppercase tracking-wider text-indigo-300 flex items-center gap-1.5">
+              <i data-lucide="history" class="w-3.5 h-3.5 text-indigo-400"></i> Storico Ordini Paziente (da UID)
+            </span>
+            <span id="modalUidOrdersCount" class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-indigo-950 text-indigo-300 border border-indigo-800/50">0 ordini</span>
+          </div>
+
+          <!-- Riepilogo Ultimo Consumabile & Ultimo Sensore -->
+          <div class="grid grid-cols-2 gap-2">
+            <div class="bg-slate-900 p-2.5 rounded-xl border border-slate-800/80">
+              <span class="text-[9px] text-slate-400 uppercase tracking-wider block">Ultimo Ord. Consumabile</span>
+              <span id="modalLastConsDate" class="text-xs font-bold text-sky-300 mt-0.5 block">--</span>
+              <span id="modalLastConsPo" class="text-[9px] font-mono text-slate-500 block truncate">PO: --</span>
+            </div>
+            <div class="bg-slate-900 p-2.5 rounded-xl border border-slate-800/80">
+              <span class="text-[9px] text-slate-400 uppercase tracking-wider block">Ultimo Ord. Sensore/CGM</span>
+              <span id="modalLastSensDate" class="text-xs font-bold text-indigo-300 mt-0.5 block">--</span>
+              <span id="modalDomStatusText" class="text-[9px] text-slate-500 block truncate">--</span>
+            </div>
+          </div>
+
+          <!-- Lista Ordini Rpt -->
+          <div id="modalUidOrdersList" class="space-y-1.5 max-h-52 overflow-y-auto custom-scroll pr-0.5">
+            <!-- Riempito da JS -->
+          </div>
+        </div>
+
+        <!-- BOX 3: DETTAGLIO ORDINE & ARTICOLI IN CONFEZIONI (COLONNA L) -->
+        <div class="bg-slate-950 rounded-2xl p-4 border border-slate-800 space-y-2.5">
+          <div class="flex items-center justify-between">
+            <span class="text-[11px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+              <i data-lucide="package" class="w-3.5 h-3.5 text-sky-400"></i> Dettaglio Articoli Fatturati nel PO
+            </span>
+            <span id="modalPoBadge" class="text-[10px] font-mono text-slate-400">PO: --</span>
+          </div>
+          
+          <div id="modalOrderInfo" class="text-[11px] text-slate-400">
+            <!-- Ordine SAP e data -->
+          </div>
+
+          <div id="modalPoItemsList" class="space-y-1.5 pt-1">
+            <!-- Elenco articoli CFN con Confezioni (Sales UOM) -->
+          </div>
+        </div>
+
+        <!-- BOX 4: DATI CLINICI & DISPOSITIVO -->
+        <div class="bg-slate-950 rounded-2xl p-4 border border-slate-800 space-y-2">
+          <span class="text-[11px] font-bold uppercase tracking-wider text-slate-400">Dispositivo & Clinica</span>
+          <div class="grid grid-cols-2 gap-2.5 pt-1">
+            <div>
+              <span class="text-[10px] text-slate-500">Seriale Micro:</span>
+              <p id="modalSerialeMicro" class="font-mono font-bold text-white text-xs mt-0.5">--</p>
+            </div>
+            <div>
+              <span class="text-[10px] text-slate-500">Seriale Minilink:</span>
+              <p id="modalSerialeMinilink" class="font-mono font-bold text-white text-xs mt-0.5">--</p>
+            </div>
+            <div>
+              <span class="text-[10px] text-slate-500">Modello:</span>
+              <p id="modalModelloMicro" class="font-medium text-slate-200 text-xs mt-0.5">--</p>
+            </div>
+            <div>
+              <span class="text-[10px] text-slate-500">Medico Prescrittore:</span>
+              <p id="modalMedico" class="font-medium text-slate-200 text-xs mt-0.5">--</p>
+            </div>
+            <div class="col-span-2">
+              <span class="text-[10px] text-slate-500">Centro Diabetologico:</span>
+              <p id="modalCentro" class="font-medium text-slate-200 text-xs mt-0.5">--</p>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== MODALE MODIFICA DATA FATTURA ==================== -->
+  <div id="editDateModal" class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 hidden">
+    <div class="bg-slate-900 border border-slate-800 rounded-3xl p-5 max-w-xs w-full space-y-4 shadow-2xl">
+      <h3 class="text-sm font-bold text-white">Inserisci Data Fatturazione</h3>
+      <p class="text-xs text-slate-400">Imposta la data manualmente per questo paziente:</p>
+      <div>
+        <input type="date" id="inputManualDate" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-sky-500">
+      </div>
+      <div class="flex gap-2 pt-2">
+        <button onclick="closeEditInvoiceDateModal()" class="flex-1 py-2 rounded-xl bg-slate-800 text-xs font-semibold text-slate-300">Annulla</button>
+        <button onclick="saveManualInvoiceDate()" class="flex-1 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-xs font-semibold text-white">Salva</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== MODALE MODIFICA DATA PRESCRIZIONE ==================== -->
+  <div id="editPrescriptionModal" class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 hidden">
+    <div class="bg-slate-900 border border-slate-800 rounded-3xl p-5 max-w-xs w-full space-y-4 shadow-2xl">
+      <div class="flex items-center gap-2 text-sky-400">
+        <i data-lucide="file-check" class="w-5 h-5"></i>
+        <h3 class="text-sm font-bold text-white">Rinnovo Prescrizione</h3>
+      </div>
+      <p id="labelPrescriptionPatient" class="text-xs text-slate-300 font-medium">Paziente: --</p>
+      <p class="text-[11px] text-slate-400">Inserisci la data di uscita della nuova prescrizione annuale:</p>
+      <div>
+        <input type="date" id="inputPrescriptionDate" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-sky-500">
+      </div>
+      <div class="flex gap-2 pt-1">
+        <button onclick="closeEditPrescriptionModal()" class="flex-1 py-2 rounded-xl bg-slate-800 text-xs font-semibold text-slate-300">Annulla</button>
+        <button onclick="savePrescriptionDate()" class="flex-1 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-xs font-semibold text-white">Salva</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== BOTTOM NAVIGATION (TAB BAR) ==================== -->
+  <nav class="fixed bottom-0 inset-x-0 z-30 bg-slate-900/95 backdrop-blur-lg border-t border-slate-800/80 px-2 py-2 flex justify-around">
+    <!-- Tab 1: Dashboard -->
+    <button onclick="switchTab('dashboard')" id="nav-btn-dashboard" class="flex flex-col items-center gap-1 text-sky-400 py-1 px-2 rounded-xl transition">
+      <i data-lucide="layout-dashboard" class="w-5 h-5"></i>
+      <span class="text-[9px] font-semibold">Home</span>
+    </button>
+    <!-- Tab 2: Da Fatturare -->
+    <button onclick="switchTab('da_fatturare')" id="nav-btn-da_fatturare" class="flex flex-col items-center gap-1 text-slate-400 py-1 px-2 rounded-xl transition relative">
+      <i data-lucide="alert-triangle" class="w-5 h-5"></i>
+      <span class="text-[9px] font-semibold">Da Fatturare</span>
+      <span id="navBadgeAlert" class="hidden absolute top-0.5 right-1.5 w-2 h-2 rounded-full bg-rose-500 ring-2 ring-slate-900"></span>
+    </button>
+    <!-- Tab 3: Prescrizioni Mese -->
+    <button onclick="switchTab('prescrizioni')" id="nav-btn-prescrizioni" class="flex flex-col items-center gap-1 text-slate-400 py-1 px-2 rounded-xl transition">
+      <i data-lucide="calendar" class="w-5 h-5"></i>
+      <span class="text-[9px] font-semibold">Scadenze Mese</span>
+    </button>
+    <!-- Tab 4: Pazienti -->
+    <button onclick="switchTab('micro')" id="nav-btn-micro" class="flex flex-col items-center gap-1 text-slate-400 py-1 px-2 rounded-xl transition">
+      <i data-lucide="users" class="w-5 h-5"></i>
+      <span class="text-[9px] font-semibold">Pazienti</span>
+    </button>
+    <!-- Tab 5: Impostazioni -->
+    <button onclick="switchTab('settings')" id="nav-btn-settings" class="flex flex-col items-center gap-1 text-slate-400 py-1 px-2 rounded-xl transition">
+      <i data-lucide="settings" class="w-5 h-5"></i>
+      <span class="text-[9px] font-semibold">Dati & PIN</span>
+    </button>
+  </nav>
+
+  <!-- App Script -->
+  <script src="app.js?v=8"></script>
+  <script>
+    lucide.createIcons();
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(function(registrations) {
+        for(let registration of registrations) {
+          registration.update();
+        }
+      });
+      navigator.serviceWorker.register('sw.js?v=8').catch(err => console.log('SW Reg fail', err));
+    }
+  </script>
+</body>
+</html>
