@@ -94,6 +94,10 @@
       </div>
     </div>
     <div class="flex items-center gap-2">
+      <button id="cloudSyncBtn" onclick="syncSharedEditsFromCloud(true)" class="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-400 border border-slate-700/80 flex items-center gap-1.5 text-[10px] font-semibold active:scale-95 transition" title="Sincronizza modifiche col Team">
+        <i data-lucide="cloud" class="w-3.5 h-3.5"></i>
+        <span id="cloudSyncLabel">Sync Team</span>
+      </button>
       <button onclick="lockApp()" class="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 active:scale-95 transition" title="Blocca App">
         <i data-lucide="lock" class="w-4 h-4"></i>
       </button>
@@ -530,6 +534,23 @@
           </div>
         </div>
 
+        <!-- BOX 1B: NOTE & INFORMAZIONI CONDIVISE CON IL TEAM -->
+        <div class="bg-slate-950 rounded-2xl p-4 border border-emerald-900/50 space-y-2.5">
+          <div class="flex items-center justify-between">
+            <span class="text-[11px] font-bold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
+              <i data-lucide="message-square-plus" class="w-3.5 h-3.5"></i> Note & Info Condivise Team
+            </span>
+            <span id="modalTeamSyncBadge" class="text-[9px] px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800/50 font-semibold">☁️ Visibile a tutti i colleghi</span>
+          </div>
+          <textarea id="inputTeamNote" rows="2" placeholder="Aggiungi una nota condivisa per i colleghi (es. sentito medico, bolla rifatta, in attesa piano...)" class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"></textarea>
+          <div class="flex items-center justify-between">
+            <span id="modalTeamNoteTimestamp" class="text-[10px] text-slate-500">Le modifiche vengono sincronizzate automaticamente</span>
+            <button onclick="savePatientTeamNote()" class="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-[11px] active:scale-95 transition">
+              Salva & Condividi
+            </button>
+          </div>
+        </div>
+
         <!-- BOX 2: STATO MATRIX / BOLLA MMX -->
         <div id="modalMatrixBox" class="rounded-2xl p-4 border space-y-2">
           <!-- Riempito dinamicamente -->
@@ -678,7 +699,7 @@
   </nav>
 
   <!-- App Script -->
-  <script src="app.js?v=9"></script>
+  <script src="app.js?v=10"></script>
   <script>
     lucide.createIcons();
     if ('serviceWorker' in navigator) {
@@ -687,7 +708,7 @@
           registration.update();
         }
       });
-      navigator.serviceWorker.register('sw.js?v=9').catch(err => console.log('SW Reg fail', err));
+      navigator.serviceWorker.register('sw.js?v=10').catch(err => console.log('SW Reg fail', err));
     }
   </script>
 </body>
