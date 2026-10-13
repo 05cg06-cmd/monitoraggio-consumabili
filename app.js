@@ -18,11 +18,12 @@ let patientForPrescription = null;
 let enteredPin = '';
 const PIN_HASH_KEY = 'mon_app_pin_sha256';
 const BIOMETRIC_KEY = 'mon_app_bio_enabled';
-const TEAM_SYNC_STORAGE_KEY = 'mon_app_team_sync_v1';
 const PBKDF2_SALT = 'Medtronic_CampaniaMolise_Salt_2026';
+const TEAM_SYNC_SECRET = 'Medtronic_TeamSync_Key_2026_CampaniaMolise';
 
-// Configurazione Cloud Sync cifrata con AES-256-GCM (decifrabile solo col PIN del team)
-const SYNC_CFG_ENC_B64 = 'steXEIT41ZG6XIOoRN48+nNAlCpYgfmIB5YqlN8FgOJYckOv4X7GPJb/TNnuW1ZTmV0c9LwQ9g/m3FPPOPDJbFprLtuqGgMIivBitQ/wHMWJ31XVyVITkXn21Z9v98xMCILSokO5yFKJKf+yiJXD5/zWZEJxVZQF1R4aIyo=';
+// Configurazione Cloud Sync cifrata con AES-256-GCM (ASCII Base64)
+const SYNC_CFG_ENC_B64 = 'tJyNosB2XmH4dkU+qgSq9prxzsQrSCueiHWdzg7mn8RwfZNrCe2r/Xr+6fzyYcA4C/EU8C5TxXrJ/inqzq6pgVl3aquE0wem9spt2K+dGz348B+FVYa8tQQRNYLDi0W5dOtTRz0Ds25BhOESBkM7w9mViIK3/s/NZI4vJro=';
+let cachedTeamSyncSession = null;
 
 // Database IndexedDB
 const DB_NAME = 'MonitoraggioConsumabiliDB';
@@ -57,11 +58,11 @@ async function computePinHash(pin) {
   return Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-async function deriveAesKeyFromPin(pin) {
+async function deriveAesKeyFromSecret(secret) {
   const subtle = window.crypto.subtle;
   const keyMaterial = await subtle.importKey(
     'raw',
-    new TextEncoder().encode(pin),
+    new TextEncoder().encode(secret),
     { name: 'PBKDF2' },
     false,
     ['deriveKey']
@@ -75,7 +76,7 @@ async function deriveAesKeyFromPin(pin) {
     },
     keyMaterial,
     { name: 'AES-GCM', length: 256 },
-    true,
+    false,
     ['encrypt', 'decrypt']
   );
 }
@@ -94,35 +95,23 @@ function uint8ToBase64(bytes) {
   return btoa(bin);
 }
 
-async function initTeamSyncWithPin(pin) {
+async function initTeamSyncWithPin() {
+  await getTeamSyncSession();
+}
+
+async function getTeamSyncSession() {
+  if (cachedTeamSyncSession) return cachedTeamSyncSession;
   try {
-    const key = await deriveAesKeyFromPin(pin);
+    const key = await deriveAesKeyFromSecret(TEAM_SYNC_SECRET);
     const rawCfg = base64ToUint8(SYNC_CFG_ENC_B64);
     const iv = rawCfg.slice(0, 12);
     const ct = rawCfg.slice(12);
     const decBuf = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
     const cfg = JSON.parse(new TextDecoder().decode(decBuf));
-    const jwk = await window.crypto.subtle.exportKey('jwk', key);
-    localStorage.setItem(TEAM_SYNC_STORAGE_KEY, JSON.stringify({ token: cfg.token, repo: cfg.repo, jwk }));
+    cachedTeamSyncSession = { token: cfg.token, repo: cfg.repo, key };
+    return cachedTeamSyncSession;
   } catch (e) {
-    // Se l'utente ha impostato un PIN locale diverso, mantiene eventuale sessione sync già sbloccata
-  }
-}
-
-async function getTeamSyncSession() {
-  const raw = localStorage.getItem(TEAM_SYNC_STORAGE_KEY);
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    const key = await window.crypto.subtle.importKey(
-      'jwk',
-      parsed.jwk,
-      { name: 'AES-GCM', length: 256 },
-      false,
-      ['encrypt', 'decrypt']
-    );
-    return { token: parsed.token, repo: parsed.repo, key };
-  } catch (e) {
+    console.error('Errore init sessione sync:', e);
     return null;
   }
 }
@@ -138,9 +127,19 @@ function setCloudSyncStatus(text, isOk = true) {
   }
 }
 
+function decodeGithubAsciiCipher(b64Content) {
+  // Il contenuto del file su GitHub è una stringa ASCII Base64 (così GitHub non altera mai i byte binari)
+  const innerAsciiB64 = atob(b64Content.replace(/\s+/g, '')).trim();
+  return base64ToUint8(innerAsciiB64);
+}
+
 async function syncSharedEditsFromCloud(showNotification = false) {
+  if (allPatients.length === 0) {
+    if (showNotification) alert('Inserisci prima il PIN per caricare i pazienti.');
+    return;
+  }
   const session = await getTeamSyncSession();
-  if (!session || allPatients.length === 0) return;
+  if (!session) return;
 
   try {
     setCloudSyncStatus('Sync...', true);
@@ -154,7 +153,7 @@ async function syncSharedEditsFromCloud(showNotification = false) {
     });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const meta = await resp.json();
-    const encBytes = base64ToUint8(meta.content);
+    const encBytes = decodeGithubAsciiCipher(meta.content);
     const iv = encBytes.slice(0, 12);
     const ct = encBytes.slice(12);
     const decBuf = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv }, session.key, ct);
@@ -197,13 +196,13 @@ async function syncSharedEditsFromCloud(showNotification = false) {
     const totalEdits = Object.keys(edits).length;
     setCloudSyncStatus(totalEdits > 0 ? `Team (${totalEdits})` : 'Team OK', true);
     if (showNotification) {
-      alert(`Sincronizzazione Team completata!\nNote/modifiche condivise attive: ${totalEdits}` + (changedCount > 0 ? ` (${changedCount} nuovi aggiornamenti scaricati dai colleghi).` : `.`));
+      alert(`Sincronizzazione Team completata! ✅\nModifiche/note condivise in archivio: ${totalEdits}` + (changedCount > 0 ? `\n(${changedCount} nuovi aggiornamenti scaricati dai colleghi).` : `\nTutti i dati sono già allineati.`));
     }
   } catch (err) {
     console.warn('Cloud sync warning:', err);
     setCloudSyncStatus('Offline', false);
     if (showNotification) {
-      alert('Impossibile contattare il cloud in questo momento (modalità offline attiva).');
+      alert('Errore sincronizzazione cloud: ' + err.message);
     }
   }
 }
@@ -230,7 +229,7 @@ async function pushSharedEditToCloud(patient) {
       const meta = await getResp.json();
       currentSha = meta.sha;
       try {
-        const encBytes = base64ToUint8(meta.content);
+        const encBytes = decodeGithubAsciiCipher(meta.content);
         const decBuf = await window.crypto.subtle.decrypt(
           { name: 'AES-GCM', iv: encBytes.slice(0, 12) },
           session.key,
@@ -259,9 +258,11 @@ async function pushSharedEditToCloud(patient) {
     combined.set(iv, 0);
     combined.set(new Uint8Array(ctBuf), 12);
 
+    // Salva come stringa ASCII Base64 dentro il file .enc per evitare transcodifiche UTF-8 di GitHub API
+    const asciiCipherB64 = uint8ToBase64(combined);
     const putBody = {
       message: `Team sync update UID ${patient.uid}`,
-      content: uint8ToBase64(combined)
+      content: btoa(asciiCipherB64)
     };
     if (currentSha) putBody.sha = currentSha;
 
@@ -280,7 +281,7 @@ async function pushSharedEditToCloud(patient) {
     return true;
   } catch (err) {
     console.warn('Errore invio modifica al cloud:', err);
-    setCloudSyncStatus('Locale', false);
+    setCloudSyncStatus('Errore Sync', false);
     return false;
   }
 }
@@ -293,7 +294,7 @@ async function decryptPayloadWithPin(pin) {
   const iv = rawBytes.slice(0, 12);
   const ciphertext = rawBytes.slice(12);
 
-  const key = await deriveAesKeyFromPin(pin);
+  const key = await deriveAesKeyFromSecret(pin);
 
   // Se il PIN è errato, subtle.decrypt lancia un'eccezione crittografica (tag GCM non valido)
   const decryptedCompressed = await window.crypto.subtle.decrypt(
