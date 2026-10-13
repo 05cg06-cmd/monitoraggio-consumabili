@@ -1268,6 +1268,20 @@ async function saveManualInvoiceDate() {
 }
 
 // ==================== IMPORT FILE EXCEL (CLIENT-SIDE) ====================
+function parseExcelDateVal(val) {
+  if (!val) return null;
+  if (val instanceof Date && !isNaN(val.getTime())) {
+    return val.toISOString().slice(0, 10);
+  }
+  if (typeof val === 'number') {
+    const dt = new Date(Math.round((val - 25569) * 86400 * 1000));
+    if (!isNaN(dt.getTime())) return dt.toISOString().slice(0, 10);
+  }
+  const s = String(val).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  return null;
+}
+
 async function handleExcelImport(fileType, event) {
   const file = event.target.files[0];
   if (!file) return;
@@ -1275,24 +1289,184 @@ async function handleExcelImport(fileType, event) {
   const progress = document.getElementById('importProgress');
   const progressText = document.getElementById('importProgressText');
   progress.classList.remove('hidden');
-  progressText.textContent = `Lettura file ${file.name}...`;
+  progressText.textContent = `Lettura file ${file.name} in corso...`;
 
   try {
     const data = await file.arrayBuffer();
-    const workbook = XLSX.read(data, { type: 'array' });
-    progressText.textContent = `File letto. Aggiornamento dati in corso...`;
+    const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+    progressText.textContent = `Elaborazione e merge dati in corso...`;
+
+    let updatedCount = 0;
 
     if (fileType === 'ib') {
-      document.getElementById('labelIbFile').textContent = `Caricato: ${file.name}`;
+      const sheetName = workbook.SheetNames.find(n => n.includes('IB_FY') || n.includes('Micro')) || workbook.SheetNames[0];
+      const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: '' });
+      const pMap = new Map(allPatients.map(p => [String(p.uid), p]));
+
+      for (let i = 1; i < rows.length; i++) {
+        const r = rows[i];
+        const uid = r[0] !== '' && r[0] !== null ? String(r[0]).replace(/\.0$/, '').trim() : '';
+        if (!uid) continue;
+        const existing = pMap.get(uid) || { uid, po_items: [], uid_orders: [] };
+        existing.centro = String(r[1] || existing.centro || '').trim();
+        existing.cognome = String(r[2] || existing.cognome || '').trim();
+        existing.nome = String(r[3] || existing.nome || '').trim();
+        existing.citta = String(r[8] || existing.citta || '').trim();
+        existing.seriale = String(r[15] || existing.seriale || '').trim();
+        existing.medico = String(r[19] || existing.medico || '').trim();
+        existing.set_infusionale = String(r[20] || existing.set_infusionale || '').trim();
+        existing.sales_rep = String(r[21] || existing.sales_rep || '').trim();
+        existing.data_consenso = parseExcelDateVal(r[22]) || existing.data_consenso || null;
+        existing.classificazione = String(r[23] || existing.classificazione || '').trim();
+        existing.modello_micro = String(r[26] || existing.modello_micro || '').trim();
+        existing.tipo_sensore = String(r[27] || existing.tipo_sensore || '').trim();
+        existing.asl = String(r[32] || existing.asl || '').trim();
+        pMap.set(uid, existing);
+        updatedCount++;
+      }
+      allPatients = Array.from(pMap.values());
+      document.getElementById('labelIbFile').textContent = `Caricato: ${file.name} (${updatedCount} righe)`;
+
     } else if (fileType === 'inv') {
-      document.getElementById('labelInvFile').textContent = `Caricato: ${file.name}`;
+      const sheetName = workbook.SheetNames.find(n => n.includes('Report')) || workbook.SheetNames[0];
+      const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: '' });
+      const batchMap = new Map();
+      const soMap = new Map();
+
+      for (let i = 4; i < rows.length; i++) {
+        const r = rows[i];
+        const batch = String(r[28] || '').trim();
+        const invDt = parseExcelDateVal(r[18]);
+        const qtr = String(r[16] || '').trim();
+        const soRaw = String(r[8] || '').trim();
+        const soClean = soRaw.replace(/^0+/, '');
+        const poRaw = String(r[7] || '').trim();
+        if (batch && invDt) {
+          if (!batchMap.has(batch) || invDt > batchMap.get(batch).inv_date) {
+            batchMap.set(batch, { inv_date: invDt, inv_qtr: qtr, so: soRaw, po: poRaw });
+          }
+        }
+        if (soClean && invDt) {
+          if (!soMap.has(soClean) || invDt > soMap.get(soClean).inv_date) {
+            soMap.set(soClean, { inv_date: invDt, inv_qtr: qtr, so: soRaw, po: poRaw });
+          }
+        }
+      }
+
+      allPatients.forEach(p => {
+        if (p.seriale && batchMap.has(p.seriale)) {
+          const info = batchMap.get(p.seriale);
+          p.inv_date = info.inv_date;
+          p.inv_qtr = info.inv_qtr;
+          p.so_number = info.so;
+          p.po_number = info.po;
+          p.inv_source = 'Seriale Diretto';
+          updatedCount++;
+        } else if (p.uid_orders && p.uid_orders.length > 0) {
+          for (const o of p.uid_orders) {
+            const soCl = String(o.so || '').replace(/^0+/, '');
+            const isMicroOrder = (o.tags || []).includes('Micro');
+            if (o.type === 'ZOR' && isMicroOrder && soMap.has(soCl)) {
+              const info = soMap.get(soCl);
+              p.inv_date = info.inv_date;
+              p.inv_qtr = info.inv_qtr;
+              p.so_number = info.so;
+              p.po_number = info.po;
+              p.inv_source = 'UID (Ordine ZOR Micro)';
+              updatedCount++;
+              break;
+            }
+          }
+        }
+      });
+      document.getElementById('labelInvFile').textContent = `Caricato: ${file.name} (${updatedCount} fatture associate)`;
+
     } else if (fileType === 'mat') {
-      document.getElementById('labelMatFile').textContent = `Caricato: ${file.name}`;
+      const sheetName = workbook.SheetNames.find(n => n.includes('Open Order')) || workbook.SheetNames[0];
+      const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: '' });
+      const matBySerial = new Map();
+      const matBySo = new Map();
+
+      for (let i = 20; i < rows.length; i++) {
+        const r = rows[i];
+        const batch = String(r[13] || '').trim();
+        const soDoc = String(r[5] || '').trim();
+        const soClean = soDoc.replace(/^0+/, '');
+        const info = {
+          sales_doc: soDoc,
+          block: String(r[2] || '').trim(),
+          date: parseExcelDateVal(r[3]),
+          ageing: Number(r[10]) || 0,
+          po: String(r[6] || '').trim()
+        };
+        if (batch.startsWith('NG')) matBySerial.set(batch, info);
+        if (soClean) matBySo.set(soClean, info);
+      }
+
+      allPatients.forEach(p => {
+        if (p.seriale && matBySerial.has(p.seriale)) {
+          p.in_matrix = true;
+          p.matrix_info = matBySerial.get(p.seriale);
+          updatedCount++;
+        } else {
+          p.in_matrix = false;
+          p.matrix_info = null;
+        }
+      });
+      document.getElementById('labelMatFile').textContent = `Caricato: ${file.name} (${updatedCount} in Matrix)`;
+
     } else if (fileType === 'rpt') {
-      document.getElementById('labelRptFile').textContent = `Caricato: ${file.name}`;
+      const sheetName = workbook.SheetNames[0];
+      const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: '' });
+      const ordersByUid = new Map();
+
+      for (let i = 1; i < rows.length; i++) {
+        const r = rows[i];
+        if (Number(r[4]) === 1) continue; // ordine cancellato
+        const uid = r[8] !== '' && r[8] !== null ? String(r[8]).replace(/\.0$/, '').trim() : '';
+        if (!uid) continue;
+        const tags = [];
+        if (Number(r[9]) === 1) tags.push('Micro');
+        if (Number(r[10]) === 1) tags.push('Consumabile');
+        if (Number(r[11]) === 1) tags.push('Sensore');
+        if (Number(r[13]) === 1) tags.push('CGM');
+        if (Number(r[12]) === 1) tags.push('Accessori');
+
+        if (!ordersByUid.has(uid)) ordersByUid.set(uid, []);
+        ordersByUid.get(uid).push({
+          so: String(r[1] || '').trim(),
+          date: parseExcelDateVal(r[2]),
+          po: String(r[3] || '').trim(),
+          type: String(r[5] || '').trim(),
+          dom: Number(r[7]) === 1,
+          tags
+        });
+      }
+
+      allPatients.forEach(p => {
+        const ords = ordersByUid.get(String(p.uid));
+        if (ords && ords.length > 0) {
+          ords.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+          p.uid_orders = ords.slice(0, 8);
+          p.domiciliare = ords.some(o => o.dom);
+          const cons = ords.find(o => o.tags.includes('Consumabile') && o.date);
+          if (cons) {
+            p.last_cons_date = cons.date;
+            p.last_cons_po = cons.po;
+          }
+          updatedCount++;
+        }
+      });
+      document.getElementById('labelRptFile').textContent = `Caricato: ${file.name} (${updatedCount} pazienti aggiornati)`;
     }
 
-    alert(`File "${file.name}" caricato con successo nel motore dell'app!`);
+    const db = await openDB();
+    await savePatientsToDB(db, allPatients);
+    populateDropdownFilters();
+    applyGlobalFilters();
+    updateStorageStats();
+
+    alert(`File "${file.name}" elaborato con successo! Aggiornati ${updatedCount} record nel database locale.`);
   } catch (err) {
     alert('Errore durante la lettura del file Excel: ' + err.message);
   } finally {
