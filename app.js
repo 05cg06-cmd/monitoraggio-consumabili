@@ -14,18 +14,22 @@ let selectedPrescriptionMonth = new Date().getMonth() + 1; // Mese corrente 1-12
 let selectedPatient = null;
 let patientForPrescription = null;
 
-// PIN & Biometric State (Zero-Knowledge: nessun PIN o chiave salvati nel codice)
+// PIN & Biometric State (Zero-Knowledge: nessun PIN o chiave salvati in chiaro nel codice)
 let enteredPin = '';
 const PIN_HASH_KEY = 'mon_app_pin_sha256';
 const BIOMETRIC_KEY = 'mon_app_bio_enabled';
+const TEAM_SYNC_STORAGE_KEY = 'mon_app_team_sync_v1';
 const PBKDF2_SALT = 'Medtronic_CampaniaMolise_Salt_2026';
+
+// Configurazione Cloud Sync cifrata con AES-256-GCM (decifrabile solo col PIN del team)
+const SYNC_CFG_ENC_B64 = 'steXEIT41ZG6XIOoRN48+nNAlCpYgfmIB5YqlN8FgOJYckOv4X7GPJb/TNnuW1ZTmV0c9LwQ9g/m3FPPOPDJbFprLtuqGgMIivBitQ/wHMWJ31XVyVITkXn21Z9v98xMCILSokO5yFKJKf+yiJXD5/zWZEJxVZQF1R4aIyo=';
 
 // Database IndexedDB
 const DB_NAME = 'MonitoraggioConsumabiliDB';
 const DB_VERSION = 1;
 const STORE_NAME = 'patients';
 const SCHEMA_VERSION_KEY = 'mon_app_schema_version';
-const CURRENT_SCHEMA_VERSION = 'v5_aes256';
+const CURRENT_SCHEMA_VERSION = 'v6_20261013';
 
 const MONTH_NAMES = {
   1: 'Gennaio', 2: 'Febbraio', 3: 'Marzo', 4: 'Aprile',
@@ -40,6 +44,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (allPatients.length > 0) {
     populateDropdownFilters();
     applyGlobalFilters();
+    syncSharedEditsFromCloud(false);
   }
   highlightActiveMonthButton();
   lucide.createIcons();
@@ -52,14 +57,7 @@ async function computePinHash(pin) {
   return Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-async function decryptPayloadWithPin(pin) {
-  const resp = await fetch('initial_data.enc?v=' + CURRENT_SCHEMA_VERSION);
-  if (!resp.ok) throw new Error('Impossibile scaricare archivio cifrato');
-  const buf = await resp.arrayBuffer();
-  const rawBytes = new Uint8Array(buf);
-  const iv = rawBytes.slice(0, 12);
-  const ciphertext = rawBytes.slice(12);
-
+async function deriveAesKeyFromPin(pin) {
   const subtle = window.crypto.subtle;
   const keyMaterial = await subtle.importKey(
     'raw',
@@ -68,8 +66,7 @@ async function decryptPayloadWithPin(pin) {
     false,
     ['deriveKey']
   );
-
-  const key = await subtle.deriveKey(
+  return subtle.deriveKey(
     {
       name: 'PBKDF2',
       salt: new TextEncoder().encode(PBKDF2_SALT),
@@ -78,12 +75,228 @@ async function decryptPayloadWithPin(pin) {
     },
     keyMaterial,
     { name: 'AES-GCM', length: 256 },
-    false,
-    ['decrypt']
+    true,
+    ['encrypt', 'decrypt']
   );
+}
+
+function base64ToUint8(b64) {
+  const clean = b64.replace(/\s+/g, '');
+  const bin = atob(clean);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function uint8ToBase64(bytes) {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
+async function initTeamSyncWithPin(pin) {
+  try {
+    const key = await deriveAesKeyFromPin(pin);
+    const rawCfg = base64ToUint8(SYNC_CFG_ENC_B64);
+    const iv = rawCfg.slice(0, 12);
+    const ct = rawCfg.slice(12);
+    const decBuf = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
+    const cfg = JSON.parse(new TextDecoder().decode(decBuf));
+    const jwk = await window.crypto.subtle.exportKey('jwk', key);
+    localStorage.setItem(TEAM_SYNC_STORAGE_KEY, JSON.stringify({ token: cfg.token, repo: cfg.repo, jwk }));
+  } catch (e) {
+    // Se l'utente ha impostato un PIN locale diverso, mantiene eventuale sessione sync già sbloccata
+  }
+}
+
+async function getTeamSyncSession() {
+  const raw = localStorage.getItem(TEAM_SYNC_STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const key = await window.crypto.subtle.importKey(
+      'jwk',
+      parsed.jwk,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt']
+    );
+    return { token: parsed.token, repo: parsed.repo, key };
+  } catch (e) {
+    return null;
+  }
+}
+
+function setCloudSyncStatus(text, isOk = true) {
+  const lbl = document.getElementById('cloudSyncLabel');
+  if (lbl) lbl.textContent = text;
+  const btn = document.getElementById('cloudSyncBtn');
+  if (btn) {
+    btn.className = isOk
+      ? 'px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-400 border border-slate-700/80 flex items-center gap-1.5 text-[10px] font-semibold active:scale-95 transition'
+      : 'px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-400 border border-slate-700/80 flex items-center gap-1.5 text-[10px] font-semibold active:scale-95 transition';
+  }
+}
+
+async function syncSharedEditsFromCloud(showNotification = false) {
+  const session = await getTeamSyncSession();
+  if (!session || allPatients.length === 0) return;
+
+  try {
+    setCloudSyncStatus('Sync...', true);
+    const url = `https://api.github.com/repos/${session.repo}/contents/shared_edits.enc?t=${Date.now()}`;
+    const resp = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${session.token}`,
+        'Accept': 'application/vnd.github+json'
+      },
+      cache: 'no-store'
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const meta = await resp.json();
+    const encBytes = base64ToUint8(meta.content);
+    const iv = encBytes.slice(0, 12);
+    const ct = encBytes.slice(12);
+    const decBuf = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv }, session.key, ct);
+    const sharedObj = JSON.parse(new TextDecoder().decode(decBuf));
+    const edits = sharedObj.edits || {};
+
+    let changedCount = 0;
+    const updatedPatients = [];
+    allPatients.forEach(p => {
+      const ed = edits[String(p.uid)];
+      if (ed) {
+        let modified = false;
+        if (ed.inv_date !== undefined && ed.inv_date !== p.inv_date) {
+          p.inv_date = ed.inv_date;
+          p.manual_edit = !!ed.manual_edit;
+          modified = true;
+        }
+        if (ed.data_prescrizione !== undefined && ed.data_prescrizione !== p.data_prescrizione) {
+          p.data_prescrizione = ed.data_prescrizione;
+          modified = true;
+        }
+        if (ed.note_team !== undefined && ed.note_team !== (p.note_team || '')) {
+          p.note_team = ed.note_team;
+          p.note_updated_at = ed.updated_at;
+          modified = true;
+        }
+        if (modified) {
+          changedCount++;
+          updatedPatients.push(p);
+        }
+      }
+    });
+
+    if (updatedPatients.length > 0) {
+      const db = await openDB();
+      await savePatientsToDB(db, updatedPatients);
+      applyGlobalFilters();
+    }
+
+    const totalEdits = Object.keys(edits).length;
+    setCloudSyncStatus(totalEdits > 0 ? `Team (${totalEdits})` : 'Team OK', true);
+    if (showNotification) {
+      alert(`Sincronizzazione Team completata!\nNote/modifiche condivise attive: ${totalEdits}` + (changedCount > 0 ? ` (${changedCount} nuovi aggiornamenti scaricati dai colleghi).` : `.`));
+    }
+  } catch (err) {
+    console.warn('Cloud sync warning:', err);
+    setCloudSyncStatus('Offline', false);
+    if (showNotification) {
+      alert('Impossibile contattare il cloud in questo momento (modalità offline attiva).');
+    }
+  }
+}
+
+async function pushSharedEditToCloud(patient) {
+  const session = await getTeamSyncSession();
+  if (!session || !patient) return false;
+
+  try {
+    setCloudSyncStatus('Invio...', true);
+    const url = `https://api.github.com/repos/${session.repo}/contents/shared_edits.enc?t=${Date.now()}`;
+    const getResp = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${session.token}`,
+        'Accept': 'application/vnd.github+json'
+      },
+      cache: 'no-store'
+    });
+
+    let currentSha = null;
+    let edits = {};
+
+    if (getResp.ok) {
+      const meta = await getResp.json();
+      currentSha = meta.sha;
+      try {
+        const encBytes = base64ToUint8(meta.content);
+        const decBuf = await window.crypto.subtle.decrypt(
+          { name: 'AES-GCM', iv: encBytes.slice(0, 12) },
+          session.key,
+          encBytes.slice(12)
+        );
+        const parsed = JSON.parse(new TextDecoder().decode(decBuf));
+        edits = parsed.edits || {};
+      } catch (e) {
+        edits = {};
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+    edits[String(patient.uid)] = {
+      inv_date: patient.inv_date || null,
+      manual_edit: !!patient.manual_edit,
+      data_prescrizione: patient.data_prescrizione || null,
+      note_team: patient.note_team || '',
+      updated_at: nowIso
+    };
+
+    const payloadBytes = new TextEncoder().encode(JSON.stringify({ updated_at: nowIso, edits }));
+    const iv = window.crypto.getRandomValues(new Uint8Array(12));
+    const ctBuf = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, session.key, payloadBytes);
+    const combined = new Uint8Array(12 + ctBuf.byteLength);
+    combined.set(iv, 0);
+    combined.set(new Uint8Array(ctBuf), 12);
+
+    const putBody = {
+      message: `Team sync update UID ${patient.uid}`,
+      content: uint8ToBase64(combined)
+    };
+    if (currentSha) putBody.sha = currentSha;
+
+    const putResp = await fetch(`https://api.github.com/repos/${session.repo}/contents/shared_edits.enc`, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${session.token}`,
+        'Accept': 'application/vnd.github+json',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(putBody)
+    });
+
+    if (!putResp.ok) throw new Error('PUT HTTP ' + putResp.status);
+    setCloudSyncStatus(`Team (${Object.keys(edits).length})`, true);
+    return true;
+  } catch (err) {
+    console.warn('Errore invio modifica al cloud:', err);
+    setCloudSyncStatus('Locale', false);
+    return false;
+  }
+}
+
+async function decryptPayloadWithPin(pin) {
+  const resp = await fetch('initial_data.enc?v=' + CURRENT_SCHEMA_VERSION);
+  if (!resp.ok) throw new Error('Impossibile scaricare archivio cifrato');
+  const buf = await resp.arrayBuffer();
+  const rawBytes = new Uint8Array(buf);
+  const iv = rawBytes.slice(0, 12);
+  const ciphertext = rawBytes.slice(12);
+
+  const key = await deriveAesKeyFromPin(pin);
 
   // Se il PIN è errato, subtle.decrypt lancia un'eccezione crittografica (tag GCM non valido)
-  const decryptedCompressed = await subtle.decrypt(
+  const decryptedCompressed = await window.crypto.subtle.decrypt(
     { name: 'AES-GCM', iv: iv },
     key,
     ciphertext
@@ -141,7 +354,9 @@ async function verifyPin() {
     if (allPatients.length > 0 && savedHash) {
       const candidateHash = await computePinHash(candidatePin);
       if (candidateHash === savedHash) {
+        await initTeamSyncWithPin(candidatePin);
         unlockApp();
+        syncSharedEditsFromCloud(false);
         return;
       } else {
         errEl.className = 'text-xs text-rose-400 font-medium h-4';
@@ -152,11 +367,12 @@ async function verifyPin() {
       }
     }
 
-    // Caso 2: Primo sblocco sul dispositivo -> Decifra initial_data.enc tramite AES-256-GCM con il PIN inserito
+    // Caso 2: Primo sblocco o nuovo aggiornamento dati -> Decifra initial_data.enc tramite AES-256-GCM
     errEl.className = 'text-xs text-sky-400 font-medium h-4';
     errEl.textContent = 'Decifratura archivio AES-256 in corso...';
 
     const data = await decryptPayloadWithPin(candidatePin);
+    await initTeamSyncWithPin(candidatePin);
     const freshPatients = data.patients || [];
 
     const db = await openDB();
@@ -167,6 +383,7 @@ async function verifyPin() {
         const oldP = storedMap.get(fp.uid);
         if (oldP) {
           if (oldP.data_prescrizione) fp.data_prescrizione = oldP.data_prescrizione;
+          if (oldP.note_team) fp.note_team = oldP.note_team;
           if (oldP.manual_edit && oldP.inv_date) {
             fp.inv_date = oldP.inv_date;
             fp.manual_edit = true;
@@ -184,6 +401,7 @@ async function verifyPin() {
     applyGlobalFilters();
     updateStorageStats();
     unlockApp();
+    syncSharedEditsFromCloud(false);
   } catch (err) {
     console.warn('Decifratura fallita:', err);
     errEl.className = 'text-xs text-rose-400 font-medium h-4';
@@ -648,6 +866,7 @@ function renderDaFatturareList() {
           <span>Sales: <strong class="text-slate-200">${p.sales_rep || '--'}</strong></span>
           <span>Centro: <strong class="text-slate-300 truncate max-w-[110px] inline-block align-bottom">${p.centro || '--'}</strong></span>
         </div>
+        ${p.note_team ? `<div class="mt-2 px-2.5 py-1.5 rounded-xl bg-emerald-950/60 border border-emerald-700/50 text-[10px] text-emerald-200 flex items-start gap-1.5"><span class="shrink-0">💬</span><span><strong>Team:</strong> ${p.note_team}</span></div>` : ''}
         ${statusHtml}
       `;
       container.appendChild(card);
@@ -845,6 +1064,8 @@ function renderPrescrizioniList() {
         </div>
       </div>
 
+      ${p.note_team ? `<div class="mt-2 px-2.5 py-1.5 rounded-xl bg-emerald-950/60 border border-emerald-700/50 text-[10px] text-emerald-200 flex items-start gap-1.5"><span class="shrink-0">💬</span><span><strong>Team:</strong> ${p.note_team}</span></div>` : ''}
+
       <!-- Stato Prescrizione & Azione Rapida -->
       <div class="mt-2.5 pt-2 border-t border-slate-800/80 flex items-center justify-between">
         <div>
@@ -878,20 +1099,24 @@ function closeEditPrescriptionModal() {
 
 async function savePrescriptionDate() {
   if (!patientForPrescription) return;
+  const targetPatient = patientForPrescription;
   const newDate = document.getElementById('inputPrescriptionDate').value;
 
-  patientForPrescription.data_prescrizione = newDate || null;
+  targetPatient.data_prescrizione = newDate || null;
 
   try {
     const db = await openDB();
-    await savePatientsToDB(db, [patientForPrescription]);
+    await savePatientsToDB(db, [targetPatient]);
   } catch (err) {
     console.error('Errore salvataggio prescrizione:', err);
   }
 
   closeEditPrescriptionModal();
   renderPrescrizioniList();
-  alert('Data rinnovo prescrizione salvata con successo!');
+  const synced = await pushSharedEditToCloud(targetPatient);
+  alert(synced
+    ? 'Data rinnovo prescrizione salvata e condivisa con tutti i colleghi! ☁️'
+    : 'Data rinnovo prescrizione salvata localmente sul dispositivo.');
 }
 
 // ==================== RENDERING: PAZIENTI (MICRO & GC) ====================
@@ -1040,6 +1265,7 @@ function renderMicroList() {
           </span>
         </div>
       </div>
+      ${p.note_team ? `<div class="mt-2 px-2.5 py-1.5 rounded-xl bg-emerald-950/60 border border-emerald-700/50 text-[10px] text-emerald-200 flex items-start gap-1.5"><span class="shrink-0">💬</span><span><strong>Team:</strong> ${p.note_team}</span></div>` : ''}
     `;
     container.appendChild(card);
   });
@@ -1062,10 +1288,19 @@ function openPatientModal(patient) {
   document.getElementById('modalDataConsenso').textContent = patient.data_consenso || 'Non specificata';
   document.getElementById('modalDataFattura').textContent = patient.inv_date || 'Non Fatturato';
 
+  const noteInput = document.getElementById('inputTeamNote');
+  if (noteInput) noteInput.value = patient.note_team || '';
+  const noteTs = document.getElementById('modalTeamNoteTimestamp');
+  if (noteTs) {
+    noteTs.textContent = patient.note_updated_at
+      ? `Ultimo agg. team: ${new Date(patient.note_updated_at).toLocaleString('it-IT')}`
+      : 'Le modifiche vengono sincronizzate automaticamente col team';
+  }
+
   const invSrcEl = document.getElementById('modalInvSource');
   if (invSrcEl) {
     invSrcEl.textContent = patient.manual_edit
-      ? 'Inserita Manualmente'
+      ? 'Inserita Manualmente (Condivisa Team)'
       : (patient.inv_source || (patient.inv_date ? 'Seriale Diretto' : 'Nessuna fattura'));
   }
 
@@ -1235,7 +1470,7 @@ function closePatientModal() {
   selectedPatient = null;
 }
 
-// ==================== MODIFICA MANUALE DATA FATTURAZIONE ====================
+// ==================== MODIFICA MANUALE DATA FATTURAZIONE & NOTE TEAM ====================
 function openEditInvoiceDateModal() {
   if (!selectedPatient) return;
   const input = document.getElementById('inputManualDate');
@@ -1249,22 +1484,49 @@ function closeEditInvoiceDateModal() {
 
 async function saveManualInvoiceDate() {
   if (!selectedPatient) return;
+  const targetPatient = selectedPatient;
   const newDate = document.getElementById('inputManualDate').value;
 
-  selectedPatient.inv_date = newDate || null;
-  selectedPatient.manual_edit = true;
+  targetPatient.inv_date = newDate || null;
+  targetPatient.manual_edit = true;
 
   try {
     const db = await openDB();
-    await savePatientsToDB(db, [selectedPatient]);
+    await savePatientsToDB(db, [targetPatient]);
   } catch (err) {
     console.error('Errore salvataggio data manuale:', err);
   }
 
   closeEditInvoiceDateModal();
-  openPatientModal(selectedPatient);
+  openPatientModal(targetPatient);
   applyGlobalFilters();
-  alert('Data di fatturazione aggiornata con successo!');
+  const synced = await pushSharedEditToCloud(targetPatient);
+  alert(synced
+    ? 'Data di fatturazione aggiornata e condivisa con tutti i colleghi! ☁️'
+    : 'Data di fatturazione salvata localmente sul dispositivo.');
+}
+
+async function savePatientTeamNote() {
+  if (!selectedPatient) return;
+  const targetPatient = selectedPatient;
+  const noteVal = (document.getElementById('inputTeamNote').value || '').trim();
+
+  targetPatient.note_team = noteVal;
+  targetPatient.note_updated_at = new Date().toISOString();
+
+  try {
+    const db = await openDB();
+    await savePatientsToDB(db, [targetPatient]);
+  } catch (err) {
+    console.error('Errore salvataggio nota team:', err);
+  }
+
+  openPatientModal(targetPatient);
+  applyGlobalFilters();
+  const synced = await pushSharedEditToCloud(targetPatient);
+  alert(synced
+    ? 'Nota salvata e condivisa in tempo reale con tutti i colleghi! ☁️'
+    : 'Nota salvata localmente sul dispositivo.');
 }
 
 // ==================== IMPORT FILE EXCEL (CLIENT-SIDE) ====================
