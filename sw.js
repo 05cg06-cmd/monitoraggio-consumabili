@@ -1,8 +1,8 @@
-const CACHE_NAME = 'monitoraggio-app-v9';
+const CACHE_NAME = 'monitoraggio-app-v10';
 const ASSETS_TO_PRECACHE = [
   './',
   './index.html',
-  './app.js?v=9',
+  './app.js?v=10',
   './manifest.json',
   './icon-192.png',
   './icon-512.png',
@@ -41,6 +41,7 @@ self.addEventListener('activate', (e) => {
 // Network-First con salvataggio automatico in Cache per funzionamento 100% Offline
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
+  if (e.request.url.includes('api.github.com')) return;
 
   e.respondWith(
     fetch(e.request)
