@@ -1,8 +1,8 @@
-const CACHE_NAME = 'monitoraggio-app-v11';
+const CACHE_NAME = 'monitoraggio-app-v12';
 const ASSETS_TO_PRECACHE = [
   './',
   './index.html',
-  './app.js?v=11',
+  './app.js?v=12',
   './manifest.json',
   './icon-192.png',
   './icon-512.png',
