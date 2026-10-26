@@ -335,7 +335,8 @@
           <button onclick="setMicroFilter('all')" id="chip-micro-all" class="px-2.5 py-1 rounded-full bg-sky-600 text-white font-medium shrink-0">Tutti (<span id="cnt-m-all">0</span>)</button>
           <button onclick="setMicroFilter('invoiced')" id="chip-micro-invoiced" class="px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 font-medium shrink-0">🟢 Fatturati (<span id="cnt-m-inv">0</span>)</button>
           <button onclick="setMicroFilter('matrix')" id="chip-micro-matrix" class="px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 font-medium shrink-0">🟡 In Matrix (<span id="cnt-m-mat">0</span>)</button>
-          <button onclick="setMicroFilter('missing')" id="chip-micro-missing" class="px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 font-medium shrink-0">🔴 Da Fatturare (<span id="cnt-m-mis">0</span>)</button>
+          <button onclick="setMicroFilter('missing')" id="chip-micro-missing" class="px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 font-medium shrink-0">🔴 Da Fatturare ≤18m (<span id="cnt-m-mis">0</span>)</button>
+          <button onclick="setMicroFilter('missing_all')" id="chip-micro-missing_all" class="px-2.5 py-1 rounded-full bg-slate-800 text-slate-300 font-medium shrink-0">📁 Storici Non Fatt. (<span id="cnt-m-mis-all">0</span>)</button>
         </div>
       </div>
 
@@ -699,7 +700,7 @@
   </nav>
 
   <!-- App Script -->
-  <script src="app.js?v=11"></script>
+  <script src="app.js?v=12"></script>
   <script>
     lucide.createIcons();
     if ('serviceWorker' in navigator) {
@@ -708,7 +709,7 @@
           registration.update();
         }
       });
-      navigator.serviceWorker.register('sw.js?v=11').catch(err => console.log('SW Reg fail', err));
+      navigator.serviceWorker.register('sw.js?v=12').catch(err => console.log('SW Reg fail', err));
     }
   </script>
 </body>
