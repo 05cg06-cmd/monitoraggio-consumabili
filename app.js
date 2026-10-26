@@ -30,7 +30,7 @@ const DB_NAME = 'MonitoraggioConsumabiliDB';
 const DB_VERSION = 1;
 const STORE_NAME = 'patients';
 const SCHEMA_VERSION_KEY = 'mon_app_schema_version';
-const CURRENT_SCHEMA_VERSION = 'v6_20261013';
+const CURRENT_SCHEMA_VERSION = 'v7_20261026';
 
 const MONTH_NAMES = {
   1: 'Gennaio', 2: 'Febbraio', 3: 'Marzo', 4: 'Aprile',
@@ -1123,7 +1123,7 @@ async function savePrescriptionDate() {
 // ==================== RENDERING: PAZIENTI (MICRO & GC) ====================
 function setMicroFilter(filter) {
   currentMicroFilter = filter;
-  ['all', 'invoiced', 'matrix', 'missing'].forEach(f => {
+  ['all', 'invoiced', 'matrix', 'missing', 'missing_all'].forEach(f => {
     const chip = document.getElementById(`chip-micro-${f}`);
     if (chip) {
       if (f === filter) {
@@ -1185,24 +1185,35 @@ function renderMicroList() {
   const isMicroMode = currentPatientType === 'micro';
   const targetClasses = isMicroMode ? ['NPNP', 'EPNP'] : ['NPGC', 'EPGC'];
   const pList = filteredPatients.filter(p => targetClasses.includes(p.classificazione));
+  const today = new Date();
+  const cutoff18m = new Date(today.getTime() - (18 * 30.5 * 24 * 60 * 60 * 1000));
 
   if (isMicroMode) {
     const cntAll = pList.length;
     const cntInv = pList.filter(p => !!p.inv_date).length;
     const cntMat = pList.filter(p => !!p.in_matrix).length;
-    const cntMis = pList.filter(p => !p.inv_date).length;
+    const unbilled18m = pList.filter(p => p.classificazione === 'NPNP' && !p.inv_date && p.seriale !== 'DROPOUT' && p.data_consenso && new Date(p.data_consenso) >= cutoff18m);
+    const unbilledHistorical = pList.filter(p => !p.inv_date && p.seriale !== 'DROPOUT' && (p.classificazione === 'EPNP' || (p.classificazione === 'NPNP' && (!p.data_consenso || new Date(p.data_consenso) < cutoff18m))));
 
     document.getElementById('cnt-m-all').textContent = cntAll;
     document.getElementById('cnt-m-inv').textContent = cntInv;
     document.getElementById('cnt-m-mat').textContent = cntMat;
-    document.getElementById('cnt-m-mis').textContent = cntMis;
+    document.getElementById('cnt-m-mis').textContent = unbilled18m.length;
+    const elMisAll = document.getElementById('cnt-m-mis-all');
+    if (elMisAll) elMisAll.textContent = unbilledHistorical.length;
   }
 
   const displayList = pList.filter(p => {
     if (isMicroMode) {
       if (currentMicroFilter === 'invoiced' && !p.inv_date) return false;
       if (currentMicroFilter === 'matrix' && !p.in_matrix) return false;
-      if (currentMicroFilter === 'missing' && p.inv_date) return false;
+      if (currentMicroFilter === 'missing') {
+        if (p.classificazione !== 'NPNP' || p.inv_date || p.seriale === 'DROPOUT' || !p.data_consenso || new Date(p.data_consenso) < cutoff18m) return false;
+      }
+      if (currentMicroFilter === 'missing_all') {
+        if (p.inv_date || p.seriale === 'DROPOUT') return false;
+        if (p.classificazione === 'NPNP' && p.data_consenso && new Date(p.data_consenso) >= cutoff18m) return false;
+      }
     }
 
     if (search) {
